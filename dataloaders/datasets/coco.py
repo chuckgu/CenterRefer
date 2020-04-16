@@ -7,7 +7,7 @@ sys.path.append('/home/tips/Desktop/project/CenterRefer/external/refer')
 # sys.path.append('/shared/CenterRefer/external/coco/PythonAPI')
 # sys.path.append('/shared/CenterRefer/external/coco/PythonAPI/pycocotools')
 # sys.path.append('/shared/CenterRefer/external/refer')
-
+import torch
 import numpy as np
 import torch
 from torch.utils.data import Dataset
@@ -22,6 +22,7 @@ from dataloaders import custom_transforms as tr
 from PIL import Image, ImageFile
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 from scipy import ndimage
+from transformers import *
 
 # base_dir="/shared/CenterRefer/"
 base_dir="/home/tips/Desktop/project/CenterRefer/"
@@ -37,11 +38,11 @@ class COCOSegmentation(Dataset):
                  args,
                  # base_dir=Path,
                  split='train',
-                 year='2017',
+                 year='2014',
                  dataset='Gref'):
         super().__init__()
         # ann_file = os.path.join(base_dir, 'annotations/instances_{}{}.json'.format(split, year))
-        # ids_file = os.path.join(base_dir, 'annotations/{}_ids_{}.pth'.format(split, year))
+        bert_file = os.path.join(Path, 'annotations/{}_bert_{}.pth'.format(split, year))
         self.img_dir = os.path.join(Path, 'images/{}{}'.format(split, year))
         self.split = split
 
@@ -65,17 +66,20 @@ class COCOSegmentation(Dataset):
         # self.coco_mask = mask
         self.refer=refer
         self.refs=refs
-        # if os.path.exists(ids_file):
-        #     self.ids = torch.load(ids_file)
-        # else:
-        #     ids = list(self.coco.imgs.keys())
-        #     self.ids = self._preprocess(ids, ids_file)
+        self.bert_folder = os.path.join(Path, 'annotations/{}_bert_{}'.format(split, year))
+
+        if os.path.exists(bert_file):
+            file=torch.load(bert_file)
+            self.bert_emb = file["bert_emb"]
+            self.embToref = file["embToref"]
+        else:
+            self.bert_emb, self.embToref = self._preprocess(refs, bert_file)
 
         self.args = args
 
     def __getitem__(self, index):
-        _img, _target = self._make_img_gt_point_pair(index)
-        sample = {'image': _img, 'label': _target}
+        _img, _target, _text_emb = self._make_img_gt_point_pair(index)
+        sample = {'image': _img, 'label': _target, 'text': _text_emb}
 
         if self.split == "train":
             return self.transform_tr(sample)
@@ -83,8 +87,10 @@ class COCOSegmentation(Dataset):
             return self.transform_val(sample)
 
     def _make_img_gt_point_pair(self, index):
+        ref_index=self.embToref[index]
         refer = self.refer
-        ref = self.refs[index]
+        ref = self.refs[ref_index]
+        _text_emb=np.load(os.path.join(self.bert_folder,self.bert_emb[index]))
         # img_metadata = coco.loadImgs(img_id)[0]
         im_name = 'COCO_' + im_type + '_' + str(ref['image_id']).zfill(12)
 
@@ -98,27 +104,60 @@ class COCOSegmentation(Dataset):
         center=ndimage.measurements.center_of_mass(_target)
         _target = Image.fromarray(_target)
         # print(center)
-        return _img, _target
+        return _img, _target, _text_emb
 
-    def _preprocess(self, ids, ids_file):
-        print("Preprocessing mask, this will take a while. " + \
+    def _preprocess(self, refs, ids_file):
+        print("Preprocessing to extract embedding from the BERT, this will take a while. " + \
               "But don't worry, it only run once for each split.")
-        tbar = trange(len(ids))
+        bert_folder=self.bert_folder
+        model_class = BertModel
+        tokenizer_class = BertTokenizer
+        pretrained_weights = "bert-base-uncased"
+
+        tokenizer = tokenizer_class.from_pretrained(pretrained_weights)
+        model = model_class.from_pretrained(pretrained_weights)
+
+        if not os.path.isdir(bert_folder):
+            os.makedirs(bert_folder)
+
+        tbar = trange(len(refs))
         new_ids = []
+        embToref={}
+        emb_id=0
         for i in tbar:
-            img_id = ids[i]
-            cocotarget = self.refer.loadAnns(self.refer.getAnnIds(imgIds=img_id))
-            img_metadata = self.refer.loadImgs(img_id)[0]
-            mask = self._gen_seg_mask(cocotarget, img_metadata['height'],
-                                      img_metadata['width'])
-            # more than 1k pixels
-            if (mask > 0).sum() > 1000:
-                new_ids.append(img_id)
-            tbar.set_description('Doing: {}/{}, got {} qualified images'. \
-                                 format(i, len(ids), len(new_ids)))
-        print('Found number of qualified images: ', len(new_ids))
-        torch.save(new_ids, ids_file)
-        return new_ids
+            ref=refs[i]
+            for sentence in ref['sentences']:
+                sent = sentence['sent']
+                input_ids = torch.tensor([tokenizer.encode(sent, add_special_tokens=True, max_length=20 ,pad_to_max_length=True)])
+                with torch.no_grad():
+                    last_hidden_states = model(input_ids)[0]  # Models outputs are now tuples
+                bert_file=os.path.join(bert_folder, '{}.npy'.format(emb_id))
+                new_ids.append('{}.npy'.format(emb_id))
+                np.save(bert_file, last_hidden_states.numpy())
+
+                embToref[emb_id]=i
+                emb_id=emb_id+1
+        save_dict={}
+        save_dict["embToref"]=embToref
+        save_dict["bert_emb"] = new_ids
+        torch.save(save_dict, ids_file)
+        print("saved")
+                # tbar = trange(len(ids))
+        # new_ids = []
+        # for i in tbar:
+        #     img_id = ids[i]
+        #     cocotarget = self.refer.loadAnns(self.refer.getAnnIds(imgIds=img_id))
+        #     img_metadata = self.refer.loadImgs(img_id)[0]
+        #     mask = self._gen_seg_mask(cocotarget, img_metadata['height'],
+        #                               img_metadata['width'])
+        #     # more than 1k pixels
+        #     if (mask > 0).sum() > 1000:
+        #         new_ids.append(img_id)
+        #     tbar.set_description('Doing: {}/{}, got {} qualified images'. \
+        #                          format(i, len(ids), len(new_ids)))
+        # print('Found number of qualified images: ', len(new_ids))
+        # torch.save(new_ids, ids_file)
+        return new_ids,embToref
 
     def _gen_seg_mask(self, target, h, w):
         mask = np.zeros((h, w), dtype=np.uint8)
@@ -158,7 +197,7 @@ class COCOSegmentation(Dataset):
 
 
     def __len__(self):
-        return len(self.refs)
+        return len(self.bert_emb)
 
 
 
