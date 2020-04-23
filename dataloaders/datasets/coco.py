@@ -171,15 +171,15 @@ class COCOSegmentation(Dataset):
         # _gaussian_heatmap = Image.fromarray(gaussian_heatmap)
         # _target = Image.fromarray(_target)
         # print(center)
-        vis=False
+        vis=True
 
         if vis:
-            _target=(_target*255)[:,:,None].repeat(3,2)
+            target=(_target*255)[:,:,None].repeat(3,2)
             # dst = np.asarray(_img) * 0.5 + _target*0.5
-            _gaussian_heatmap=_gaussian_heatmap[:,:,None]*255
-            _gaussian_heatmap= np.concatenate((_gaussian_heatmap, np.zeros((_gaussian_heatmap.shape[0],_gaussian_heatmap.shape[1],2))), axis=2)
+            gaussian_heatmap=_gaussian_heatmap[:,:,None]*255
+            gaussian_heatmap= np.concatenate((gaussian_heatmap, np.zeros((gaussian_heatmap.shape[0],gaussian_heatmap.shape[1],2))), axis=2)
 
-            dst=np.asarray(_img) * 0.5 + _target*0.5+0.5*_gaussian_heatmap
+            dst=np.asarray(_img) * 0.5 + target*0.5+0.5*gaussian_heatmap
 
             font = cv2.FONT_HERSHEY_SIMPLEX
             bottomLeftCornerOfText = (30, 30)
