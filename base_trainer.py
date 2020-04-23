@@ -13,7 +13,8 @@ class BaseTrainer:
         for i, sample in enumerate(tbar):
             if len(sample["image"]) >= 1:
                 image, target = sample["image"], sample["label"]
-                # text = sample['text_batch']
+                text = sample['text']
+                heatmap_gt = sample['center']
                 # image = sample['im_batch'].astype(np.float32)
                 # target = torch.as_tensor(np.expand_dims(sample['mask_batch'].astype(np.float32), axis=2))
                 #
@@ -26,15 +27,24 @@ class BaseTrainer:
                 # image=torch.as_tensor(np.expand_dims(image, axis=0))
                 # image.shape=[b,3,513,513]
                 if self.args.cuda:
-                    image, target = image.cuda(), target.cuda()
+                    image, target,text,heatmap_gt = image.cuda(), target.cuda(),text.cuda(),heatmap_gt.cuda()
                 self.scheduler(self.optimizer, i, epoch, self.best_pred)
                 self.optimizer.zero_grad()
-                output = self.model(image)
-                loss = self.criterion(output, target)
+                output,center_mask = self.model((image,text,heatmap_gt))
+
+                mask_loss = self.criterion(output, target)
+
+                center_loss=self.center_criterion(center_mask,heatmap_gt)
+
+                loss=mask_loss+center_loss
+                if not torch.isfinite(loss):
+                    print('WARNING: non-finite loss, ending training ')
+                    exit(1)
+
                 loss.backward()
                 self.optimizer.step()
                 train_loss += loss.item()
-                tbar.set_description("Train loss: %.3f" % (train_loss / (i + 1)))
+                tbar.set_description("Train loss: %.3f, Mask:: %.3f, Center: %.3f" % (train_loss / (i + 1),mask_loss,center_loss))
                 self.writer.add_scalar(
                     "train/total_loss_iter", loss.item(), i + num_img_tr * epoch
                 )

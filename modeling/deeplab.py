@@ -12,7 +12,7 @@ class DeepLab(nn.Module):
     def __init__(
         self,
         output_stride=16,
-        num_classes=21,
+        num_classes=1,
         sync_bn=True,
         freeze_bn=False,
         pretrained=True,
@@ -63,12 +63,18 @@ class DeepLab(nn.Module):
 
 
     def forward(self, input):#[b,3,320,320]
-        x, low_level_feat = self.backbone(input) # x.shape=[b,2048,33,33] [b,2048,20,20]
+        x, low_level_feat,_ = self.backbone(input) # x.shape=[b,2048,33,33] [b,2048,20,20] low_level.shape=[b,256,80,80]
         x = self.aspp(x)  # x.shape=[b,256,33,33] [b,256,20,20]
         x = self.decoder(x, low_level_feat) # x.shape=[b,80,129,129] [b,80,80,80]
         x = F.interpolate(x, size=input.size()[2:], mode='bilinear', align_corners=True)  # x.shape=[b,80,513,513] [b,80,320,320]
 
         return x
+
+    def forward_encoder(self,input):
+        x, low_level_feat,low_level_feat_8 = self.backbone(input) # x.shape=[b,2048,33,33] [b,2048,20,20] low_level.shape=[b,256,80,80]
+        x = self.aspp(x)  # x.shape=[b,256,33,33] [b,256,20,20]
+
+        return low_level_feat,low_level_feat_8,x
 
     def freeze_bn(self):
         for m in self.modules():

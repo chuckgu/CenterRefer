@@ -3,7 +3,70 @@ import random
 import numpy as np
 import torch
 from PIL import Image, ImageOps, ImageFilter
+import skimage
 
+
+def resize_and_pad(im, input_h, input_w):
+    # Resize and pad im to input_h x input_w size
+    im_h, im_w = im.shape[:2]
+    scale = min(input_h / im_h, input_w / im_w)
+    resized_h = int(np.round(im_h * scale))
+    resized_w = int(np.round(im_w * scale))
+    pad_h = int(np.floor(input_h - resized_h) / 2)
+    pad_w = int(np.floor(input_w - resized_w) / 2)
+
+    resized_im = skimage.transform.resize(im, [resized_h, resized_w])
+    if im.ndim > 2:
+        new_im = np.zeros((input_h, input_w, im.shape[2]), dtype=resized_im.dtype)
+    else:
+        new_im = np.zeros((input_h, input_w), dtype=resized_im.dtype)
+    new_im[pad_h:pad_h+resized_h, pad_w:pad_w+resized_w, ...] = resized_im
+
+    return new_im
+
+def resize_and_crop(im, input_h, input_w):
+    # Resize and crop im to input_h x input_w size
+    im_h, im_w = im.shape[:2]
+    scale = max(input_h / im_h, input_w / im_w)
+    resized_h = int(np.round(im_h * scale))
+    resized_w = int(np.round(im_w * scale))
+    crop_h = int(np.floor(resized_h - input_h) / 2)
+    crop_w = int(np.floor(resized_w - input_w) / 2)
+
+    resized_im = skimage.transform.resize(im, [resized_h, resized_w])
+    if im.ndim > 2:
+        new_im = np.zeros((input_h, input_w, im.shape[2]), dtype=resized_im.dtype)
+    else:
+        new_im = np.zeros((input_h, input_w), dtype=resized_im.dtype)
+    new_im[...] = resized_im[crop_h:crop_h+input_h, crop_w:crop_w+input_w, ...]
+
+    return new_im
+
+
+class FixScalePad:
+    """Convert ndarrays in sample to Tensors."""
+    def __init__(self, h=320,w=320):
+        self.h = h
+        self.w = w
+
+    def __call__(self, sample):
+        # swap color axis because
+        # numpy image: H x W x C
+        # torch image: C X H X W
+        img = sample["image"]
+        mask = sample["label"]
+        text = sample["text"]
+        center = sample["center"]
+        img = np.array(img).astype(np.float32)
+        text = np.array(text).astype(np.float32)
+        center = np.array(center).astype(np.float32)
+        mask = np.array(mask).astype(np.float32)
+
+        img = resize_and_pad(img,self.h,self.w)
+        mask = resize_and_pad(mask,self.h,self.w)
+        center = resize_and_pad(center,self.h,self.w)
+
+        return {"image": img, "label": mask, "text": text, "center": center}
 
 class Normalize:
     """Normalize a tensor image with mean and standard deviation.
@@ -19,13 +82,16 @@ class Normalize:
     def __call__(self, sample):
         img = sample["image"]
         mask = sample["label"]
+        text=sample["text"]
+        center=sample["center"]
         img = np.array(img).astype(np.float32)
         mask = np.array(mask).astype(np.float32)
+
         img /= 255.0
         img -= self.mean
         img /= self.std
 
-        return {"image": img, "label": mask}
+        return {"image": img, "label": mask, "text": text, "center": center}
 
 
 class ToTensor:
@@ -37,34 +103,45 @@ class ToTensor:
         # torch image: C X H X W
         img = sample["image"]
         mask = sample["label"]
+        text=sample["text"]
+        center=sample["center"]
         img = np.array(img).astype(np.float32).transpose((2, 0, 1))
+        text = np.array(text).astype(np.float32)
+        center = np.array(center).astype(np.float32)
         mask = np.array(mask).astype(np.float32)
+        center=center/np.max(center)
 
         img = torch.from_numpy(img).float()
         mask = torch.from_numpy(mask).float()
+        center = torch.from_numpy(center).float()
+        text = torch.from_numpy(text).float()
 
-        return {"image": img, "label": mask}
+        return {"image": img, "label": mask, "text": text, "center": center}
 
 
 class RandomHorizontalFlip:
     def __call__(self, sample):
         img = sample["image"]
         mask = sample["label"]
+        text=sample["text"]
+        center=sample["center"]
         if random.random() < 0.5:
             img = img.transpose(Image.FLIP_LEFT_RIGHT)
             mask = mask.transpose(Image.FLIP_LEFT_RIGHT)
 
-        return {"image": img, "label": mask}
+        return {"image": img, "label": mask, "text": text, "center": center}
 
 
 class RandomGaussianBlur:
     def __call__(self, sample):
         img = sample["image"]
         mask = sample["label"]
+        text=sample["text"]
+        center=sample["center"]
         if random.random() < 0.5:
             img = img.filter(ImageFilter.GaussianBlur(radius=random.random()))
 
-        return {"image": img, "label": mask}
+        return {"image": img, "label": mask, "text": text, "center": center}
 
 
 class RandomScaleCrop:
@@ -76,6 +153,8 @@ class RandomScaleCrop:
     def __call__(self, sample):
         img = sample["image"]
         mask = sample["label"]
+        text=sample["text"]
+        center=sample["center"]
         # random scale (short edge)
         short_size = random.randint(int(self.base_size * 0.5), int(self.base_size * 2.0))
         w, h = img.size
@@ -100,7 +179,7 @@ class RandomScaleCrop:
         img = img.crop((x1, y1, x1 + self.crop_size, y1 + self.crop_size))
         mask = mask.crop((x1, y1, x1 + self.crop_size, y1 + self.crop_size))
 
-        return {"image": img, "label": mask}
+        return {"image": img, "label": mask, "text": text, "center": center}
 
 
 class FixScale:
@@ -110,6 +189,8 @@ class FixScale:
     def __call__(self, sample):
         img = sample["image"]
         mask = sample["label"]
+        text=sample["text"]
+        center=sample["center"]
         w, h = img.size
         if w > h:
             oh = self.crop_size
@@ -120,7 +201,7 @@ class FixScale:
         img = img.resize((ow, oh), Image.BILINEAR)
         mask = mask.resize((ow, oh), Image.NEAREST)
 
-        return {"image": img, "label": mask}
+        return {"image": img, "label": mask, "text": text, "center": center}
 
 
 class FixScaleCrop(object):
@@ -130,6 +211,8 @@ class FixScaleCrop(object):
     def __call__(self, sample):
         img = sample['image']
         mask = sample['label']
+        text=sample["text"]
+        center=sample["center"]
         w, h = img.size
         if w > h:
             oh = self.crop_size
@@ -147,7 +230,7 @@ class FixScaleCrop(object):
         mask = mask.crop((x1, y1, x1 + self.crop_size, y1 + self.crop_size))
 
         return {'image': img,
-                'label': mask}
+                'label': mask, "text": text, "center": center}
 
 class FixedResize(object):
     def __init__(self, size):
@@ -156,11 +239,12 @@ class FixedResize(object):
     def __call__(self, sample):
         img = sample['image']
         mask = sample['label']
-
+        text=sample["text"]
+        center=sample["center"]
         assert img.size == mask.size
 
         img = img.resize(self.size, Image.BILINEAR)
         mask = mask.resize(self.size, Image.NEAREST)
 
         return {'image': img,
-                'label': mask}
+                'label': mask, "text": text, "center": center}

@@ -21,6 +21,8 @@ class SegmentationLosses:
         """Choices: ['ce' or 'focal']"""
         if mode == "ce":
             return self.CrossEntropyLoss
+        elif mode == "be":
+            return self.BCEWithLogitsLoss
         elif mode == "focal":
             return self.FocalLoss
         elif mode == "ce_finetune":
@@ -39,6 +41,19 @@ class SegmentationLosses:
             criterion = criterion.cuda()
 
         loss = criterion(logit, target.long())
+
+        if self.batch_average:
+            loss /= n
+
+        return loss
+
+    def BCEWithLogitsLoss(self, logit, target):
+        n, _, h, w = logit.size()
+        criterion = nn.BCEWithLogitsLoss()
+        if self.cuda:
+            criterion = criterion.cuda()
+
+        loss = criterion(logit.view(n,-1), target.view(n,-1))
 
         if self.batch_average:
             loss /= n
@@ -112,4 +127,28 @@ class GMMNLoss:
             loss += torch.sum(S * kernel_val)
 
         loss = torch.sqrt(loss)
+        return loss
+
+
+class JointsMSELoss(nn.Module):
+    def __init__(self, use_target_weight=False):
+        super(JointsMSELoss, self).__init__()
+        self.criterion = nn.MSELoss(size_average=True)
+        self.use_target_weight = use_target_weight
+
+    def forward(self, output, target, target_weight=None):
+        batch_size = output.size(0)
+        # num_joints = output.size(1)
+        heatmap_pred = output.reshape((batch_size,  -1))
+        heatmap_gt = target.reshape((batch_size,  -1))
+        loss = 0
+
+        if self.use_target_weight:
+            loss += 0.5 * self.criterion(
+                heatmap_pred.mul(target_weight[:]),
+                heatmap_gt.mul(target_weight[:])
+            )
+        else:
+            loss += 0.5 * self.criterion(heatmap_pred, heatmap_gt)
+
         return loss

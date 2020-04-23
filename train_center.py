@@ -6,10 +6,12 @@ from tqdm import tqdm
 
 from dataloaders import make_data_loader
 from modeling.deeplab import DeepLab
+from modeling.center_refer import CenterRefer
 from modeling.sync_batchnorm.replicate import patch_replication_callback
 from dataloaders.datasets import DATASETS_DIRS
 from utils.calculate_weights import calculate_weigths_labels
 from utils.loss import SegmentationLosses
+from utils.loss import *
 from utils.lr_scheduler import LR_Scheduler
 from utils.metrics import Evaluator
 from utils.saver import Saver
@@ -19,6 +21,7 @@ from exp_data import CLASSES_NAMES
 from base_trainer import BaseTrainer
 from util import data_reader
 from util.processing_tools import *
+import torch.nn as nn
 
 class Trainer(BaseTrainer):
     def __init__(self, args):
@@ -36,7 +39,7 @@ class Trainer(BaseTrainer):
         (self.train_loader, self.val_loader, _, self.nclass,) = make_data_loader(
             args, **kwargs
         )
-        self.nclass=80
+        self.nclass=1
         dataset=args.dataset
         setname='train'
 
@@ -52,7 +55,7 @@ class Trainer(BaseTrainer):
         # self.train_loader = data_reader.DataReader(data_folder, data_prefix,iters_per_log=100)
 
         # Define network
-        model = DeepLab(
+        base_model = DeepLab(
             num_classes=self.nclass,
             output_stride=16,
             sync_bn=args.sync_bn,
@@ -61,9 +64,11 @@ class Trainer(BaseTrainer):
             pretrained_path=args.deeplab_pretrained_path,
         )
 
+        model = CenterRefer(vis_emb_net=base_model)
+
         train_params = [
-            {"params": model.get_1x_lr_params(), "lr": args.lr},
-            {"params": model.get_10x_lr_params(), "lr": args.lr * 10},
+            {"params": model.vis_emb_net.get_1x_lr_params(), "lr": args.lr},
+            {"params": model.vis_emb_net.get_10x_lr_params(), "lr": args.lr * 10},
         ]
 
         # Define Optimizer
@@ -89,9 +94,11 @@ class Trainer(BaseTrainer):
             weight = torch.from_numpy(weight.astype(np.float32))
         else:
             weight = None
+        self.center_criterion = JointsMSELoss().cuda()
         self.criterion = SegmentationLosses(weight=weight, cuda=args.cuda).build_loss(
             mode=args.loss_type
         )
+
         self.model, self.optimizer = model, optimizer
 
         # Define Evaluator
@@ -221,7 +228,7 @@ def main():
     parser.add_argument(
         "--loss-type",
         type=str,
-        default="ce",
+        default="be",
         choices=["ce", "focal"],
         help="loss func type (default: ce)",
     )
@@ -240,7 +247,7 @@ def main():
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=8,
+        default=4,
         metavar="N",
         help="input batch size for training (default: auto)",
     )
@@ -296,7 +303,7 @@ def main():
     # default settings for epochs, batch_size and lr
     if args.epochs is None:
         epoches = {
-            "coco": 30,
+            "Gref": 30,
             "cityscapes": 200,
             "pascal": 50,
         }
@@ -310,7 +317,7 @@ def main():
 
     if args.lr is None:
         lrs = {
-            "coco": 0.1,
+            "Gref": 0.1,
             "cityscapes": 0.01,
             "pascal": 0.007,
         }
@@ -327,10 +334,10 @@ def main():
     # trainer.validation(0)
     for epoch in range(trainer.args.start_epoch, trainer.args.epochs):
         trainer.training(epoch)
-        if not trainer.args.no_val and epoch % args.eval_interval == (
-            args.eval_interval - 1
-        ):
-            trainer.validation(epoch)
+        # if not trainer.args.no_val and epoch % args.eval_interval == (
+        #     args.eval_interval - 1
+        # ):
+        #     trainer.validation(epoch)
     trainer.writer.close()
 
 

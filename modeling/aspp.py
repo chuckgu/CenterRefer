@@ -62,7 +62,8 @@ class ASPP(nn.Module):
         self.dropout = nn.Dropout(0.5)
         self._init_weight()
 
-    def forward(self, x):
+    def forward(self, x): # [b,2048,20,20]
+
         x1 = self.aspp1(x)
         x2 = self.aspp2(x)
         x3 = self.aspp3(x)
