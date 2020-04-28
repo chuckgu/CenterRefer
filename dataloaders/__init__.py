@@ -6,10 +6,7 @@ from dataloaders.datasets import combine_dbs, pascal, coco
 def make_data_loader(
     args,
     transform=True,
-    load_embedding=None,
-    w2c_size=300,
-    weak_label=False,
-    unseen_classes_idx_weak=[],
+    b_test=False,
     **kwargs
 ):
 
@@ -18,9 +15,10 @@ def make_data_loader(
             args,
             # transform=transform,
             split="train",
+            b_test=b_test
         )
         val_set = coco.COCOSegmentation(
-            args, split="val",
+            args, split="val",b_test=b_test
         )
         if args.use_sbd:
             sbd_train = sbd.SBDSegmentation(

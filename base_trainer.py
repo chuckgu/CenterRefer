@@ -1,8 +1,22 @@
 from tqdm import tqdm
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 mu = np.array((104.00698793, 116.66876762, 122.67891434))
+
+
+def binary_cross_inbal(output, target):
+    n, _, h, w = output.size()
+
+    n_class=(target>0).sum()
+    b_class=(n*h*w)-n_class
+
+    pos_weight = torch.Tensor([int(b_class/n_class)]).cuda()
+    loss = F.binary_cross_entropy_with_logits(output.view(n,-1), target.view(n,-1), pos_weight=pos_weight)
+
+    loss /= n
+    return loss
 
 class BaseTrainer:
     def training(self, epoch):
@@ -15,28 +29,20 @@ class BaseTrainer:
                 image, target = sample["image"], sample["label"]
                 text = sample['text']
                 heatmap_gt = sample['center']
-                # image = sample['im_batch'].astype(np.float32)
-                # target = torch.as_tensor(np.expand_dims(sample['mask_batch'].astype(np.float32), axis=2))
-                #
-                # img_tmp = np.transpose(img[jj], axes=[1, 2, 0])
-                # img_tmp *= (0.229, 0.224, 0.225)
-                # img_tmp += (0.485, 0.456, 0.406)
-                # img_tmp *= 255.0
-                # img_tmp = img_tmp.astype(np.uint8)
-                #
-                # image=torch.as_tensor(np.expand_dims(image, axis=0))
-                # image.shape=[b,3,513,513]
+
                 if self.args.cuda:
                     image, target,text,heatmap_gt = image.cuda(), target.cuda(),text.cuda(),heatmap_gt.cuda()
                 self.scheduler(self.optimizer, i, epoch, self.best_pred)
                 self.optimizer.zero_grad()
                 output,center_mask = self.model((image,text,heatmap_gt))
 
-                mask_loss = self.criterion(output, target)
+                # mask_loss = self.criterion(output, target)
+
+                mask_loss = binary_cross_inbal(output, target)
 
                 center_loss=self.center_criterion(center_mask,heatmap_gt)
-
-                loss=mask_loss+center_loss
+                sigma=0.8
+                loss=sigma*mask_loss+(1-sigma)*center_loss
                 if not torch.isfinite(loss):
                     print('WARNING: non-finite loss, ending training ')
                     exit(1)
@@ -44,7 +50,7 @@ class BaseTrainer:
                 loss.backward()
                 self.optimizer.step()
                 train_loss += loss.item()
-                tbar.set_description("Train loss: %.3f, Mask:: %.3f, Center: %.3f" % (train_loss / (i + 1),mask_loss,center_loss))
+                tbar.set_description("Train loss: %.4f, Mask:: %.4f, Center: %.4f" % (train_loss / (i + 1),mask_loss,center_loss))
                 self.writer.add_scalar(
                     "train/total_loss_iter", loss.item(), i + num_img_tr * epoch
                 )

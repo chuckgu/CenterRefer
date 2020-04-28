@@ -14,10 +14,17 @@ class CenterRefer(nn.Module):
         else:
             BatchNorm = nn.BatchNorm2d
 
+
         self.vis_emb_net = vis_emb_net
         self.encoder_fusion=Encoder_fusion()
         # self.center_attention=CGSA()
-        self.heatmap_conv = nn.Sequential(nn.Conv2d(256, 128, kernel_size=1, stride=1),
+        self.mask_conv = nn.Sequential(nn.Conv2d(512, 128, kernel_size=1, stride=1),
+                                       BatchNorm(128),
+                                       nn.ReLU(),
+                                       nn.Dropout(0.5),
+                                       nn.Conv2d(128, 1, kernel_size=1, stride=1))
+
+        self.heatmap_conv = nn.Sequential(nn.Conv2d(512, 128, kernel_size=1, stride=1),
                                        BatchNorm(128),
                                        nn.ReLU(),
                                        nn.Dropout(0.5),
@@ -32,9 +39,26 @@ class CenterRefer(nn.Module):
         # att_fusion_feat=self.center_attention(fusion_feat)
 
         center_mask = self.heatmap_conv(fusion_feat)
-        x = self.vis_emb_net.decoder(x, fusion_feat) # x.shape=[b,80,129,129] [b,80,80,80]
+        x = self.mask_conv(fusion_feat)
+        # x = self.vis_emb_net.decoder(x, fusion_feat) # x.shape=[b,80,129,129] [b,80,80,80]
 
         x = F.interpolate(x, size=img.size()[2:], mode='bilinear', align_corners=True)  # x.shape=[b,80,513,513] [b,80,320,320]
         center_heatmap = F.interpolate(center_mask, size=img.size()[2:], mode='bilinear', align_corners=True)
 
         return x, center_heatmap
+
+    def get_params(self):
+        modules = [self.encoder_fusion,self.heatmap_conv]
+        for i in range(len(modules)):
+            for m in modules[i].named_modules():
+                # if self.freeze_bn:
+                #     if isinstance(m[1], nn.Conv2d):
+                #         for p in m[1].parameters():
+                #             if p.requires_grad:
+                #                 yield p
+                # else:
+                if isinstance(m[1], nn.Conv2d) or isinstance(m[1], SynchronizedBatchNorm2d) \
+                        or isinstance(m[1], nn.BatchNorm2d):
+                    for p in m[1].parameters():
+                        if p.requires_grad:
+                            yield p

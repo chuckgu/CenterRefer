@@ -65,6 +65,7 @@ class FixScalePad:
         img = resize_and_pad(img,self.h,self.w)
         mask = resize_and_pad(mask,self.h,self.w)
         center = resize_and_pad(center,self.h,self.w)
+        mask=(mask > 0)
 
         return {"image": img, "label": mask, "text": text, "center": center}
 

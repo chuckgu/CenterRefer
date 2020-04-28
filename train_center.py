@@ -22,6 +22,7 @@ from base_trainer import BaseTrainer
 from util import data_reader
 from util.processing_tools import *
 import torch.nn as nn
+from util import im_processing, text_processing, eval_tools
 
 class Trainer(BaseTrainer):
     def __init__(self, args):
@@ -34,10 +35,11 @@ class Trainer(BaseTrainer):
         self.summary = TensorboardSummary(self.saver.experiment_dir)
         self.writer = self.summary.create_summary()
 
+        b_test=None
         # Define Dataloader
         kwargs = {"num_workers": args.workers, "pin_memory": True}
         (self.train_loader, self.val_loader, _, self.nclass,) = make_data_loader(
-            args, **kwargs
+            args, b_test=b_test, **kwargs
         )
         self.nclass=1
         dataset=args.dataset
@@ -68,7 +70,8 @@ class Trainer(BaseTrainer):
 
         train_params = [
             {"params": model.vis_emb_net.get_1x_lr_params(), "lr": args.lr},
-            {"params": model.vis_emb_net.get_10x_lr_params(), "lr": args.lr * 10},
+            {"params": model.vis_emb_net.get_10x_lr_params(), "lr": args.lr },
+            {"params": model.get_params(), "lr": args.lr },
         ]
 
         # Define Optimizer
@@ -78,6 +81,12 @@ class Trainer(BaseTrainer):
             weight_decay=args.weight_decay,
             nesterov=args.nesterov,
         )
+        # optimizer = torch.optim.Adam(
+        #     train_params,
+        #     # momentum=args.momentum,
+        #     weight_decay=args.weight_decay,
+        #     # nesterov=args.nesterov,
+        # )
 
         # Define Criterion
         # whether to use class balanced weights
@@ -105,7 +114,7 @@ class Trainer(BaseTrainer):
         self.evaluator = Evaluator(self.nclass)
         # Define lr scheduler
         self.scheduler = LR_Scheduler(
-            args.lr_scheduler, args.lr, args.epochs, len(self.train_loader)
+            args.lr_scheduler, args.lr, args.epochs, len(self.train_loader),1
         )
 
         # Using cuda
@@ -128,61 +137,96 @@ class Trainer(BaseTrainer):
             if not args.ft:
                 self.optimizer.load_state_dict(checkpoint["optimizer"])
             self.best_pred = checkpoint["best_pred"]
-            print("=> loaded checkpoint '{args.resume}' (epoch {checkpoint['epoch']})")
+            print("=> loaded checkpoint %s (epoch % .f)" % (args.resume,args.start_epoch))
 
         # Clear start epoch if fine-tuning
         if args.ft:
             args.start_epoch = 0
 
     def validation(self, epoch):
-        class_names = list(CLASSES_NAMES.values())
+        class_names = ["RES"]
         self.model.eval()
         self.evaluator.reset()
         tbar = tqdm(self.val_loader, desc="\r")
         test_loss = 0.0
+        IU_result = list()
+        score_thresh = 1e-9
+        eval_seg_iou_list = [.5, .6, .7, .8, .9]
+        cum_I, cum_U = 0, 0
+        mean_IoU, mean_dcrf_IoU = 0, 0
+        seg_correct = np.zeros(len(eval_seg_iou_list), dtype=np.int32)
+        seg_total = 0.
+
         for i, sample in enumerate(tbar):
-            image, target = sample["image"], sample["label"]
+            image, target,text, heatmap_gt = sample["image"], sample["label"],  sample['text'],sample['center']
             if self.args.cuda:
-                image, target = image.cuda(), target.cuda()
+                image, target,text,heatmap_gt = image.cuda(), target.cuda(),text.cuda(),heatmap_gt.cuda()
             with torch.no_grad():
-                output = self.model(image)
+                output,_ = self.model((image,text,heatmap_gt))
             loss = self.criterion(output, target)
             test_loss += loss.item()
-            tbar.set_description("Test loss: %.3f" % (test_loss / (i + 1)))
-            pred = output.data.cpu().numpy()
-            target = target.cpu().numpy()
-            pred = np.argmax(pred, axis=1)
+
+
+            # pred = output.data.cpu().numpy()
+            # predicts=nn.functional.sigmoid(output).cpu().numpy().squeeze(1)
+            mask = target.cpu().numpy()
+            predicts = (output.cpu().numpy().squeeze(1) >= score_thresh).astype(np.float32)
+            # pred = np.argmax(pred, axis=1)
             # Add batch sample into evaluator
-            self.evaluator.add_batch(target, pred)
+            # self.evaluator.add_batch(target, pred)
+            # print(predicts.sum())
+            n_iter=i
+            I, U = eval_tools.compute_mask_IU(predicts, mask)
+            IU_result.append({'batch_no': n_iter, 'I': I, 'U': U})
+            mean_IoU += float(I) / U
+            cum_I += I
+            cum_U += U
+            msg = 'cumulative IoU = %f' % (cum_I/cum_U)
+            for n_eval_iou in range(len(eval_seg_iou_list)):
+                eval_seg_iou = eval_seg_iou_list[n_eval_iou]
+                seg_correct[n_eval_iou] += (I/U >= eval_seg_iou)
+            # print(msg)
+            seg_total += 1
+            tbar.set_description("Test loss: %.3f,Mean IoU: %.4f" % (test_loss / (i + 1), mean_IoU/seg_total))
+
+        print('Segmentation evaluation (without DenseCRF):')
+        result_str = ''
+        for n_eval_iou in range(len(eval_seg_iou_list)):
+            result_str += 'precision@%s = %f\n' % \
+                          (str(eval_seg_iou_list[n_eval_iou]), seg_correct[n_eval_iou] / seg_total)
+        result_str += 'overall IoU = %f; mean IoU = %f\n' % (cum_I / cum_U, mean_IoU / seg_total)
+        print(result_str)
 
         # Fast test during the training
-        Acc = self.evaluator.Pixel_Accuracy()
-        Acc_class, Acc_class_by_class = self.evaluator.Pixel_Accuracy_Class()
-        mIoU, mIoU_by_class = self.evaluator.Mean_Intersection_over_Union()
-        FWIoU = self.evaluator.Frequency_Weighted_Intersection_over_Union()
-        self.writer.add_scalar("val/total_loss_epoch", test_loss, epoch)
-        self.writer.add_scalar("val/mIoU", mIoU, epoch)
-        self.writer.add_scalar("val/Acc", Acc, epoch)
-        self.writer.add_scalar("val/Acc_class", Acc_class, epoch)
-        self.writer.add_scalar("val/fwIoU", FWIoU, epoch)
-        print("Validation:")
-        print(
-            "[Epoch: %d, numImages: %5d]"
-            % (epoch, i * self.args.batch_size + image.data.shape[0])
-        )
-        print("Acc:{Acc}, Acc_class:{Acc_class}, mIoU:{mIoU}, fwIoU: {FWIoU}")
-        print("Loss: {test_loss:.3f}")
+        # Acc = self.evaluator.Pixel_Accuracy()
+        # Acc_class, Acc_class_by_class = self.evaluator.Pixel_Accuracy_Class()
+        # mIoU, mIoU_by_class = self.evaluator.Mean_Intersection_over_Union()
+        # FWIoU = self.evaluator.Frequency_Weighted_Intersection_over_Union()
+        # self.writer.add_scalar("val/total_loss_epoch", test_loss, epoch)
+        # self.writer.add_scalar("val/mIoU", mean_IoU, epoch)
+        # self.writer.add_scalar("val/Acc", Acc, epoch)
+        # self.writer.add_scalar("val/Acc_class", Acc_class, epoch)
+        # self.writer.add_scalar("val/fwIoU", FWIoU, epoch)
+        # print("Validation:")
+        # print(
+        #     "[Epoch: %d, numImages: %5d]"
+        #     % (epoch, i * self.args.batch_size + image.data.shape[0])
+        # )
+        # print("Acc:{Acc}, Acc_class:{Acc_class}, mIoU:{mIoU}, fwIoU: {FWIoU}")
+        # print("Loss: {test_loss:.3f}")
+        #
+        # for i, (class_name, acc_value, mIoU_value) in enumerate(
+        #     zip(class_names, Acc_class_by_class, mIoU_by_class)
+        # ):
+        #     self.writer.add_scalar("Acc_by_class/" + class_name, acc_value, epoch)
+        #     self.writer.add_scalar("mIoU_by_class/" + class_name, mIoU_value, epoch)
+        #     print(class_names[i], "- acc:", acc_value, " mIoU:", mIoU_value)
 
-        for i, (class_name, acc_value, mIoU_value) in enumerate(
-            zip(class_names, Acc_class_by_class, mIoU_by_class)
-        ):
-            self.writer.add_scalar("Acc_by_class/" + class_name, acc_value, epoch)
-            self.writer.add_scalar("mIoU_by_class/" + class_name, mIoU_value, epoch)
-            print(class_names[i], "- acc:", acc_value, " mIoU:", mIoU_value)
-
-        new_pred = mIoU
-        is_best = True
-        self.best_pred = new_pred
+        new_pred = mean_IoU / seg_total
+        is_best = False
+        if new_pred>self.best_pred:
+            is_best = True
+            self.best_pred = new_pred
         self.saver.save_checkpoint(
             {
                 "epoch": epoch + 1,
@@ -247,7 +291,7 @@ def main():
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=4,
+        default=16,
         metavar="N",
         help="input batch size for training (default: auto)",
     )
@@ -275,7 +319,15 @@ def main():
 
     # evaluation option
     parser.add_argument(
-        "--eval-interval", type=int, default=10, help="evaluation interval (default: 1)"
+        "--eval-interval", type=int, default=1, help="evaluation interval (default: 1)"
+    )
+
+    parser.add_argument(
+        "--gpu-ids",
+        type=str,
+        default="0,1",
+        help="use which gpu to train, must be a \
+                            comma-separated list of integers only (default=0)",
     )
     # only seen classes
     # 10 unseen
@@ -322,23 +374,34 @@ def main():
             "pascal": 0.007,
         }
         args.lr = lrs[args.dataset.lower()] / (4 * len(args.gpu_ids)) * args.batch_size
+    args.lr = 0.005
 
     if args.checkname is None:
         args.checkname = "deeplab-resnet-center"
-    print(args)
-    torch.manual_seed(args.seed)
-    trainer = Trainer(args)
-    print("Starting Epoch:", trainer.args.start_epoch)
-    print("Total Epoches:", trainer.args.epochs)
 
-    # trainer.validation(0)
-    for epoch in range(trainer.args.start_epoch, trainer.args.epochs):
-        trainer.training(epoch)
-        # if not trainer.args.no_val and epoch % args.eval_interval == (
-        #     args.eval_interval - 1
-        # ):
-        #     trainer.validation(epoch)
-    trainer.writer.close()
+    print(args)
+    b_eval=False
+    torch.manual_seed(args.seed)
+    if b_eval:
+        print("##################test mode#########################")
+        args.resume="/shared/CenterRefer/run/Gref/Gref_center/experiment/"+"1_model.pth.tar"
+        # args.resume="/home/tips/Desktop/project/CenterRefer/run/Gref/Gref_center/experiment/"+"13_model.pth.tar"
+        trainer = Trainer(args)
+        trainer.validation(0)
+    else:
+        print("###############train mode#######################")
+
+        trainer = Trainer(args)
+        print("Starting Epoch:", trainer.args.start_epoch)
+        print("Total Epoches:", trainer.args.epochs)
+
+        for epoch in range(trainer.args.start_epoch, trainer.args.epochs):
+            trainer.training(epoch)
+            if not trainer.args.no_val and epoch % args.eval_interval == (
+                args.eval_interval - 1
+            ):
+                trainer.validation(epoch)
+        trainer.writer.close()
 
 
 if __name__ == "__main__":

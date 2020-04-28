@@ -1,9 +1,13 @@
 import sys
 # sys.path.append('./external/coco/PythonAPI')
 
-sys.path.append('/home/tips/Desktop/project/CenterRefer/external/coco/PythonAPI')
-sys.path.append('/home/tips/Desktop/project/CenterRefer/external/coco/PythonAPI/pycocotools')
-sys.path.append('/home/tips/Desktop/project/CenterRefer/external/refer')
+base_dir="/shared/CenterRefer/"
+# base_dir="/home/tips/Desktop/project/CenterRefer/"
+
+sys.path.append(base_dir+'external/coco/PythonAPI')
+sys.path.append(base_dir+'external/coco/PythonAPI/pycocotools')
+sys.path.append(base_dir+'external/refer')
+
 # sys.path.append('/shared/CenterRefer/external/coco/PythonAPI')
 # sys.path.append('/shared/CenterRefer/external/coco/PythonAPI/pycocotools')
 # sys.path.append('/shared/CenterRefer/external/refer')
@@ -28,8 +32,7 @@ import matplotlib.pyplot as plt
 import skimage
 import cv2
 
-# base_dir="/shared/CenterRefer/"
-base_dir="/home/tips/Desktop/project/CenterRefer/"
+
 Path=base_dir+'data/coco/'
 im_type = 'train2014'
 
@@ -84,7 +87,7 @@ def draw_gaussian(heatmap, center, radius, k=1):
     np.maximum(masked_heatmap, masked_gaussian * k, out=masked_heatmap)
 
 class COCOSegmentation(Dataset):
-    NUM_CLASSES = 21
+    NUM_CLASSES = 1
     CAT_LIST = [0, 5, 2, 16, 9, 44, 6, 3, 17, 62, 21, 67, 18, 19, 4,
         1, 64, 20, 63, 7, 72]
 
@@ -93,7 +96,8 @@ class COCOSegmentation(Dataset):
                  # base_dir=Path,
                  split='train',
                  year='2014',
-                 dataset='Gref'):
+                 dataset='Gref',
+                 b_test=None):
         super().__init__()
         # ann_file = os.path.join(base_dir, 'annotations/instances_{}{}.json'.format(split, year))
         bert_file = os.path.join(Path, 'annotations/{}_bert_{}.pth'.format(split, year))
@@ -101,6 +105,7 @@ class COCOSegmentation(Dataset):
         self.split = split
         self.h=320
         self.w=320
+        self.b_test=b_test
 
         # im_dir = './data/coco/images'
         # im_type = 'train2014'
@@ -164,14 +169,14 @@ class COCOSegmentation(Dataset):
         # _gaussian_heatmap = generate_heatmap(_target,center)
 
         _gaussian_heatmap = np.zeros(_target.shape, dtype=np.float32)
-        draw_gaussian(_gaussian_heatmap, center, 16)
+        draw_gaussian(_gaussian_heatmap, center, 64)
 
         # _img = np.asarray(_img)
 
         # _gaussian_heatmap = Image.fromarray(gaussian_heatmap)
         # _target = Image.fromarray(_target)
         # print(center)
-        vis=True
+        vis=False
 
         if vis:
             target=(_target*255)[:,:,None].repeat(3,2)
@@ -292,7 +297,12 @@ class COCOSegmentation(Dataset):
 
 
     def __len__(self):
-        return len(self.bert_emb)
+        if self.b_test is None:
+            return len(self.bert_emb)
+        else:
+            return int(len(self.bert_emb)*self.b_test)
+
+
 
 
 

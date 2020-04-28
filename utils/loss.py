@@ -49,11 +49,15 @@ class SegmentationLosses:
 
     def BCEWithLogitsLoss(self, logit, target):
         n, _, h, w = logit.size()
-        criterion = nn.BCEWithLogitsLoss()
+
+        pos_weight = torch.Tensor([5])
+        criterion = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
         if self.cuda:
             criterion = criterion.cuda()
+        loss=criterion(logit.view(n,-1),target.view(n,-1))
 
-        loss = criterion(logit.view(n,-1), target.view(n,-1))
+
+        # loss = nn.functional.binary_cross_entropy(nn.functional.sigmoid(logit.view(n,-1)), target.view(n,-1))
 
         if self.batch_average:
             loss /= n

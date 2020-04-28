@@ -62,8 +62,8 @@ class Encoder_fusion(nn.Module):
     def __init__(self,sync_bn=True):
         super().__init__()
 
-        bert_dim=768
-        attn_dim=256
+        self.bert_dim=768
+        self.attn_dim=512
 
         if sync_bn:
             BatchNorm = SynchronizedBatchNorm2d
@@ -72,12 +72,16 @@ class Encoder_fusion(nn.Module):
 
         self.num_pos=12
 
-        self.conv1 = nn.Conv2d(512, 256, kernel_size=1, stride=1,
+        self.conv1 = nn.Conv2d(512, self.attn_dim, kernel_size=1, stride=1,
                                 bias=False)
-        self.t_dim=FCNet([bert_dim, attn_dim], bias=False)
-        self.v_dim = FCNet([256, attn_dim], bias=False)
-        self.ban=BAN(attn_dim,attn_dim, 1)
-        self.ban_self = BAN(attn_dim, attn_dim, 1)
+        self.conv2 = nn.Conv2d(256, self.attn_dim, kernel_size=1, stride=1,
+                                bias=False)
+        self.conv3 = nn.Conv2d(256, self.attn_dim, kernel_size=1, stride=1,
+                                bias=False)
+        self.t_dim=FCNet([self.bert_dim, self.attn_dim], bias=False)
+        self.v_dim = FCNet([self.attn_dim, self.attn_dim], bias=False)
+        self.ban=BAN(self.attn_dim,self.attn_dim, 1)
+        self.ban_self = BAN(self.attn_dim, self.attn_dim, 1)
 
         # self.center_conf = nn.Sequential(FCNet([attn_dim, 64], bias=True),
         #                                  FCNet([64, 1], bias=True))
@@ -88,6 +92,8 @@ class Encoder_fusion(nn.Module):
 
         (feat_high, feat_mid, feat_low, text) = input # [b,256,80,80], [b,512,40,40], [b,256,20,20]
         feat_mid = self.conv1(feat_mid)
+        feat_high = self.conv2(feat_high)
+        feat_low = self.conv3(feat_low)
 
         batch = feat_high.shape[0]
 
@@ -97,7 +103,7 @@ class Encoder_fusion(nn.Module):
         # feat_mid_pos = extract_position_matrix(feat_mid.shape)
         # feat_low_pos = extract_position_matrix(feat_low.shape)
 
-        feat_cat = torch.cat([feat_high.view(batch,-1,256),feat_mid.view(batch, -1, 256),feat_low.view(batch, -1, 256)],dim=1)
+        feat_cat = torch.cat([feat_high.view(batch,-1,self.attn_dim),feat_mid.view(batch, -1, self.attn_dim),feat_low.view(batch, -1, self.attn_dim)],dim=1)
         # pos_center = torch.cat(
         #     [feat_high_pos.view(batch, -1, 2), feat_mid_pos.view(batch, -1, 2), feat_low_pos.view(batch, -1, 2)], dim=1)
 
