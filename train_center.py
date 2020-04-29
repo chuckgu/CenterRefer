@@ -383,7 +383,7 @@ def main():
             "pascal": 0.007,
         }
         args.lr = lrs[args.dataset.lower()] / (4 * len(args.gpu_ids)) * args.batch_size
-    args.lr = 3E-4 / (4 * len(args.gpu_ids)) * args.batch_size
+    args.lr = 1E-3 / (4 * len(args.gpu_ids)) * args.batch_size
 
     if args.checkname is None:
         args.checkname = "deeplab-resnet-center"

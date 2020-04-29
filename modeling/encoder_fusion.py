@@ -63,7 +63,7 @@ class Encoder_fusion(nn.Module):
         super().__init__()
 
         self.bert_dim=768
-        self.attn_dim=512
+        self.attn_dim=256
 
         if sync_bn:
             BatchNorm = SynchronizedBatchNorm2d
@@ -72,17 +72,40 @@ class Encoder_fusion(nn.Module):
 
         self.num_pos=12
 
-        self.conv1 = nn.Conv2d(512, self.attn_dim, kernel_size=1, stride=1,
-                                bias=False)
-        self.conv2 = nn.Conv2d(256, self.attn_dim, kernel_size=1, stride=1,
-                                bias=False)
-        self.conv3 = nn.Conv2d(256, self.attn_dim, kernel_size=1, stride=1,
-                                bias=False)
+        self.conv1 = nn.Sequential(nn.Conv2d(512, self.attn_dim, kernel_size=1, stride=1,
+                                bias=False),
+                                   BatchNorm(self.attn_dim),
+                                   nn.ReLU(),
+                                   nn.Dropout(0.5),
+                                   )
+
+
+        self.conv2 = nn.Sequential(nn.Conv2d(256, self.attn_dim, kernel_size=1, stride=1,
+                                bias=False),
+                                   BatchNorm(self.attn_dim),
+                                   nn.ReLU(),
+                                   nn.Dropout(0.5),
+                                   )
+
+        self.conv3 = nn.Sequential(nn.Conv2d(256, self.attn_dim, kernel_size=1, stride=1,
+                                bias=False),
+                                   BatchNorm(self.attn_dim),
+                                   nn.ReLU(),
+                                   nn.Dropout(0.5),
+                                   )
+
         self.t_dim=FCNet([self.bert_dim, self.attn_dim], bias=False)
         self.v_dim = FCNet([self.attn_dim, self.attn_dim], bias=False)
-        self.ban=BAN(self.attn_dim,self.attn_dim, 1)
+        self.ban=BAN(self.attn_dim,self.attn_dim, 2)
+        # self.ban_t = BAN(self.attn_dim, self.attn_dim, 1)
         self.ban_self = BAN(self.attn_dim, self.attn_dim, 1)
 
+        self.conv_f = nn.Sequential(nn.Conv2d(self.attn_dim, self.attn_dim, kernel_size=1, stride=1,
+                                bias=False),
+                                   BatchNorm(self.attn_dim),
+                                   nn.ReLU(),
+                                   nn.Dropout(0.5),
+                                   )
         # self.center_conf = nn.Sequential(FCNet([attn_dim, 64], bias=True),
         #                                  FCNet([64, 1], bias=True))
 
@@ -114,7 +137,8 @@ class Encoder_fusion(nn.Module):
         ## bilinear attention with bert embedding
 
         (joint_emb, _) = self.ban(text_emb, feat_cat)
-
+        # (joint_emb_t, _) = self.ban_t(feat_cat, text_emb)
+        # joint_emb = torch.cat([joint_emb,joint_emb_t],dim=1)
         (joint_emb, _) = self.ban_self(joint_emb, joint_emb)
 
         feat_high_emb=joint_emb[:,:feat_high.shape[2]*feat_high.shape[3],:].view(batch,feat_high.shape[2],feat_high.shape[3],-1).permute(0,3,1,2)
@@ -124,9 +148,9 @@ class Encoder_fusion(nn.Module):
         feat_mid_emb = F.interpolate(feat_mid_emb, size=feat_high_emb.size()[2:], mode='bilinear', align_corners=True)
         feat_low_emb = F.interpolate(feat_low_emb, size=feat_high_emb.size()[2:], mode='bilinear', align_corners=True)
 
-        feat_final=feat_high_emb+feat_mid_emb+feat_low_emb
+        feat_final=feat_high_emb*feat_mid_emb*feat_low_emb
 
-
+        feat_final=self.conv_f(feat_final)
 
 
 

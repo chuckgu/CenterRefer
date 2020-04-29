@@ -18,13 +18,13 @@ class CenterRefer(nn.Module):
         self.vis_emb_net = vis_emb_net
         self.encoder_fusion=Encoder_fusion()
         # self.center_attention=CGSA()
-        self.mask_conv = nn.Sequential(nn.Conv2d(512, 128, kernel_size=1, stride=1),
-                                       BatchNorm(128),
-                                       nn.ReLU(),
-                                       nn.Dropout(0.5),
-                                       nn.Conv2d(128, 1, kernel_size=1, stride=1))
+        # self.mask_conv = nn.Sequential(nn.Conv2d(512, 128, kernel_size=1, stride=1),
+        #                                BatchNorm(128),
+        #                                nn.ReLU(),
+        #                                nn.Dropout(0.5),
+        #                                nn.Conv2d(128, 1, kernel_size=1, stride=1))
 
-        self.heatmap_conv = nn.Sequential(nn.Conv2d(512, 128, kernel_size=1, stride=1),
+        self.heatmap_conv = nn.Sequential(nn.Conv2d(256, 128, kernel_size=1, stride=1),
                                        BatchNorm(128),
                                        nn.ReLU(),
                                        nn.Dropout(0.5),
@@ -39,8 +39,8 @@ class CenterRefer(nn.Module):
         # att_fusion_feat=self.center_attention(fusion_feat)
 
         center_heatmap = self.heatmap_conv(fusion_feat)
-        x = self.mask_conv(fusion_feat)
-        # x = self.vis_emb_net.decoder(x, fusion_feat) # x.shape=[b,80,129,129] [b,80,80,80]
+        # x = self.mask_conv(fusion_feat)
+        x = self.vis_emb_net.decoder(x, fusion_feat) # x.shape=[b,80,129,129] [b,80,80,80]
 
         x = F.interpolate(x, size=img.size()[2:], mode='bilinear', align_corners=True)  # x.shape=[b,80,513,513] [b,80,320,320]
         # center_heatmap = F.interpolate(center_mask, size=img.size()[2:], mode='bilinear', align_corners=True)
@@ -48,7 +48,7 @@ class CenterRefer(nn.Module):
         return x, center_heatmap
 
     def get_params(self):
-        modules = [self.encoder_fusion,self.mask_conv]
+        modules = [self.encoder_fusion,self.vis_emb_net.decoder]
         for i in range(len(modules)):
             for m in modules[i].named_modules():
                 # if self.freeze_bn:

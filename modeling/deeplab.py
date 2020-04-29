@@ -100,7 +100,7 @@ class DeepLab(nn.Module):
                                 yield p
 
     def get_10x_lr_params(self):
-        modules = [self.aspp, self.decoder]
+        modules = [self.aspp]
         for i in range(len(modules)):
             for m in modules[i].named_modules():
                 if self.freeze_bn:
