@@ -86,6 +86,8 @@ def draw_gaussian(heatmap, center, radius, k=1):
     masked_gaussian = gaussian[radius - top:radius + bottom, radius - left:radius + right]
     np.maximum(masked_heatmap, masked_gaussian * k, out=masked_heatmap)
 
+
+
 class COCOSegmentation(Dataset):
     NUM_CLASSES = 1
     CAT_LIST = [0, 5, 2, 16, 9, 44, 6, 3, 17, 62, 21, 67, 18, 19, 4,
@@ -163,13 +165,16 @@ class COCOSegmentation(Dataset):
         rle = mask.frPyObjects(seg, _img.height, _img.width)
         _target= np.max(mask.decode(rle), axis=2).astype(np.float32)
         center = ndimage.measurements.center_of_mass(_target) #(y,x)
-        # center=np.asarray([int(center[0]*320/_target.shape[0]),int(center[1]*320/_target.shape[1])]).astype(np.float32)
-        center=np.asarray([int(center[0]),int(center[1])]).astype(np.float32)
+
+        scale = min(80 / _target.shape[0], 80 / _target.shape[1])
+
+        center=np.asarray([int(center[0]*scale),int(center[1]*scale)]).astype(np.float32)
+        # center=np.asarray([int(center[0]),int(center[1])]).astype(np.float32)
 
         # _gaussian_heatmap = generate_heatmap(_target,center)
 
-        _gaussian_heatmap = np.zeros(_target.shape, dtype=np.float32)
-        draw_gaussian(_gaussian_heatmap, center, 64)
+        _gaussian_heatmap = np.zeros([80,80], dtype=np.float32)
+        draw_gaussian(_gaussian_heatmap, center, 5)
 
         # _img = np.asarray(_img)
 

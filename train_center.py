@@ -68,25 +68,34 @@ class Trainer(BaseTrainer):
 
         model = CenterRefer(vis_emb_net=base_model)
 
-        train_params = [
-            {"params": model.vis_emb_net.get_1x_lr_params(), "lr": args.lr},
-            {"params": model.vis_emb_net.get_10x_lr_params(), "lr": args.lr },
-            {"params": model.get_params(), "lr": args.lr },
-        ]
+        train_backbone=True
+        if train_backbone:
+
+            train_params = [
+                {"params": model.vis_emb_net.get_1x_lr_params(), "lr": args.lr},
+                {"params": model.vis_emb_net.get_10x_lr_params(), "lr": args.lr },
+                {"params": model.get_params(), "lr": args.lr*5 },
+                {"params": model.get_params_slow(), "lr": args.lr*0.1},
+            ]
+        else:
+            train_params = [
+                {"params": model.get_params(), "lr": args.lr*5 },
+                {"params": model.get_params_slow(), "lr": args.lr*0.1},
+            ]
 
         # Define Optimizer
-        optimizer = torch.optim.SGD(
-            train_params,
-            momentum=args.momentum,
-            weight_decay=args.weight_decay,
-            nesterov=args.nesterov,
-        )
-        # optimizer = torch.optim.Adam(
+        # optimizer = torch.optim.SGD(
         #     train_params,
-        #     # momentum=args.momentum,
+        #     momentum=args.momentum,
         #     weight_decay=args.weight_decay,
-        #     # nesterov=args.nesterov,
+        #     nesterov=args.nesterov,
         # )
+        optimizer = torch.optim.AdamW(
+            train_params,
+            # momentum=args.momentum,
+            weight_decay=args.weight_decay,
+            # nesterov=args.nesterov,
+        )
 
         # Define Criterion
         # whether to use class balanced weights
@@ -374,7 +383,7 @@ def main():
             "pascal": 0.007,
         }
         args.lr = lrs[args.dataset.lower()] / (4 * len(args.gpu_ids)) * args.batch_size
-    args.lr = 0.005
+    args.lr = 3E-4 / (4 * len(args.gpu_ids)) * args.batch_size
 
     if args.checkname is None:
         args.checkname = "deeplab-resnet-center"
@@ -391,10 +400,12 @@ def main():
     else:
         print("###############train mode#######################")
 
+        # args.resume = "/shared/CenterRefer/run/Gref/Gref_center/experiment/" + "1_model.pth.tar"
         trainer = Trainer(args)
         print("Starting Epoch:", trainer.args.start_epoch)
         print("Total Epoches:", trainer.args.epochs)
 
+        # trainer.validation(trainer.args.start_epoch)
         for epoch in range(trainer.args.start_epoch, trainer.args.epochs):
             trainer.training(epoch)
             if not trainer.args.no_val and epoch % args.eval_interval == (

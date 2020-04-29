@@ -38,17 +38,33 @@ class CenterRefer(nn.Module):
         fusion_feat=self.encoder_fusion((low_level_feat, low_level_feat_8, x,text))
         # att_fusion_feat=self.center_attention(fusion_feat)
 
-        center_mask = self.heatmap_conv(fusion_feat)
+        center_heatmap = self.heatmap_conv(fusion_feat)
         x = self.mask_conv(fusion_feat)
         # x = self.vis_emb_net.decoder(x, fusion_feat) # x.shape=[b,80,129,129] [b,80,80,80]
 
         x = F.interpolate(x, size=img.size()[2:], mode='bilinear', align_corners=True)  # x.shape=[b,80,513,513] [b,80,320,320]
-        center_heatmap = F.interpolate(center_mask, size=img.size()[2:], mode='bilinear', align_corners=True)
+        # center_heatmap = F.interpolate(center_mask, size=img.size()[2:], mode='bilinear', align_corners=True)
 
         return x, center_heatmap
 
     def get_params(self):
-        modules = [self.encoder_fusion,self.heatmap_conv]
+        modules = [self.encoder_fusion,self.mask_conv]
+        for i in range(len(modules)):
+            for m in modules[i].named_modules():
+                # if self.freeze_bn:
+                #     if isinstance(m[1], nn.Conv2d):
+                #         for p in m[1].parameters():
+                #             if p.requires_grad:
+                #                 yield p
+                # else:
+                if isinstance(m[1], nn.Conv2d) or isinstance(m[1], SynchronizedBatchNorm2d) \
+                        or isinstance(m[1], nn.BatchNorm2d):
+                    for p in m[1].parameters():
+                        if p.requires_grad:
+                            yield p
+
+    def get_params_slow(self):
+        modules = [self.heatmap_conv]
         for i in range(len(modules)):
             for m in modules[i].named_modules():
                 # if self.freeze_bn:
