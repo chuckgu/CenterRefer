@@ -456,7 +456,7 @@ class ReferDataset(data.Dataset):
         if self.testmode:
             return img, np.array(word_id, dtype=int), np.array(word_mask, dtype=int), \
                 np.array(bbox, dtype=np.float32), np.array(ratio, dtype=np.float32), \
-                np.array(dw, dtype=np.float32), np.array(dh, dtype=np.float32), self.images[idx][0], mask,np.array(center,dtype=np.float32)
+                np.array(dw, dtype=np.float32), np.array(dh, dtype=np.float32), self.images[idx][0], mask,np.array(center,dtype=np.float32),phrase
         else:
             return img, np.array(word_id, dtype=int), np.array(word_mask, dtype=int), \
             np.array(bbox, dtype=np.float32), mask, np.array(center,dtype=np.float32)

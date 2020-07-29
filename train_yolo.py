@@ -123,8 +123,8 @@ def adaptive_min_pooling_loss(x):
 
 def max_onehot(x):
     n,c,h,w = x.size()
-    x_max = torch.max(x[:,1:,:,:], dim=1, keepdim=True)[0]
-    x[:,1:,:,:][x[:,1:,:,:] != x_max] = 0
+    x_max = torch.max(x, dim=1, keepdim=True)[0]
+    x[x != x_max] = 0
     return x
 
 def yolo_loss(input, target, gi, gj,  w_coord=5., w_neg=1./5, size_average=True):
@@ -157,7 +157,7 @@ def yolo_loss(input, target, gi, gj,  w_coord=5., w_neg=1./5, size_average=True)
     # pred_conf = torch.cat(pred_conf_list, dim=0)
     # gt_conf = torch.cat(gt_conf_list, dim=0)
     # loss_conf = celoss(pred_conf, gt_conf.max(1)[1])
-    return (loss_x+loss_y)*w_coord/3 + loss_conf/3
+    return (loss_x+loss_y)*w_coord/3  + loss_conf/3
 
 def refine_loss(input, target):
     celoss = torch.nn.CrossEntropyLoss(size_average=True)
@@ -166,35 +166,64 @@ def refine_loss(input, target):
 
     return celoss(input, target)
 
-def seam_loss(cam1, cam_rv1,cam2, cam_rv2, label_ ):
+def seam_loss(cam1, cam_rv1,cam2, cam_rv2, gt_score1, gt_score2):
     N=cam1.size(0)
+    c1=cam1.size(1)
+    c2=cam2.size(1)
+
     bg_score = torch.ones((N, 1)).cuda()
-    label = torch.cat((bg_score, label_.unsqueeze(1)), dim=1)
-    label = label.unsqueeze(2).unsqueeze(3)
+    gt1_onehot= torch.zeros((N,c1)).cuda()
+    gt2_onehot = torch.zeros((N,c2)).cuda()
+
+    i1=gt_score1[:,1]*cam1.size(2)+gt_score1[:,0]
+    i2=gt_score2[:,1]*cam2.size(2)+gt_score2[:,0]
+
+    gt1_onehot[range(gt1_onehot.shape[0]), i1]=1.
+    gt2_onehot[range(gt2_onehot.shape[0]), i2]=1.
+
+    # gt1 = torch.cat((bg_score, gt1_), dim=1)
+    gt1 = gt1_onehot.unsqueeze(2).unsqueeze(3)
+
+    # gt2 = torch.cat((bg_score, gt2_), dim=1)
+    gt2 = gt2_onehot.unsqueeze(2).unsqueeze(3)
 
     label1 = F.adaptive_avg_pool2d(cam1, (1, 1))
-    # loss_rvmin1 = adaptive_min_pooling_loss((cam_rv1 * label)[:, 1:, :, :])
-    cam1 = max_norm(cam1) * label
-    cam_rv1 = max_norm(cam_rv1) * label
+    loss_rvmin1 = adaptive_min_pooling_loss((cam_rv1 * gt1))
+    cam1 = max_norm(cam1)
+    cam1=cam1[range(cam1.shape[0]), i1]
+
+    cam_rv1 = max_norm(cam_rv1)
+    cam_rv1 = cam_rv1[range(cam_rv1.shape[0]), i1]
 
     label2 = F.adaptive_avg_pool2d(cam2, (1, 1))
-    # loss_rvmin2 = adaptive_min_pooling_loss((cam_rv2 * label)[:, 1:, :, :])
-    cam2 = max_norm(cam2) * label
-    cam_rv2 = max_norm(cam_rv2) * label
+    loss_rvmin2 = adaptive_min_pooling_loss((cam_rv2 * gt2))
+    cam2 = max_norm(cam2)
+    cam2 = cam2[range(cam2.shape[0]), i2]
+    cam_rv2 = max_norm(cam_rv2)
+    cam_rv2 = cam_rv2[range(cam_rv2.shape[0]), i2]
 
     # loss_cls1 = F.multilabel_soft_margin_loss(label1[:, 1:, :, :], label[:, 1:, :, :])
     # loss_cls2 = F.multilabel_soft_margin_loss(label2[:, 1:, :, :], label[:, 1:, :, :])
 
 
-    loss_cls1 = F.cross_entropy(label1.squeeze(3).squeeze(2), label_.long())
-    loss_cls2 = F.cross_entropy(label2.squeeze(3).squeeze(2), label_.long())
+    loss_cls1 = F.cross_entropy(label1.squeeze(3).squeeze(2), i1.long())
+    loss_cls2 = F.cross_entropy(label2.squeeze(3).squeeze(2), i2.long())
+
+    cam1 = F.interpolate(cam1.unsqueeze(1), [40,40], mode='bilinear',
+                         align_corners=True)
+    cam_rv1 = F.interpolate(cam_rv1.unsqueeze(1), [40,40], mode='bilinear',
+                            align_corners=True)
+    cam2 = F.interpolate(cam2.unsqueeze(1), [40,40], mode='bilinear',
+                         align_corners=True)
+    cam_rv2 = F.interpolate(cam_rv2.unsqueeze(1), [40,40], mode='bilinear',
+                            align_corners=True)
 
 
     ns, cs, hs, ws = cam2.size()
-    loss_er = torch.mean(torch.abs(cam1[:, 1:, :, :] - cam2[:, 1:, :, :]))
+    loss_er = torch.mean(torch.abs(cam1 - cam2))
     # loss_er = torch.mean(torch.pow(cam1[:,1:,:,:]-cam2[:,1:,:,:], 2))
-    cam1[:, 0, :, :] = 1 - torch.max(cam1[:, 1:, :, :], dim=1)[0]
-    cam2[:, 0, :, :] = 1 - torch.max(cam2[:, 1:, :, :], dim=1)[0]
+    # cam1[:, 0, :, :] = 1 - torch.max(cam1[:, 1:, :, :], dim=1)[0]
+    # cam2[:, 0, :, :] = 1 - torch.max(cam2[:, 1:, :, :], dim=1)[0]
     #            with torch.no_grad():
     #                eq_mask = (torch.max(torch.abs(cam1-cam2),dim=1,keepdim=True)[0]<0.7).float()
     tensor_ecr1 = torch.abs(max_onehot(cam2.detach()) - cam_rv1)  # *eq_mask
@@ -203,7 +232,7 @@ def seam_loss(cam1, cam_rv1,cam2, cam_rv2, label_ ):
     loss_ecr2 = torch.mean(torch.topk(tensor_ecr2.view(ns, -1), k=(int)(2 * hs * ws * 0.2), dim=-1)[0])
     loss_ecr = loss_ecr1 + loss_ecr2
 
-    loss_cls = (loss_cls1 + loss_cls2) / 2 #+ (loss_rvmin1 + loss_rvmin2) / 2
+    loss_cls = (loss_cls1 + loss_cls2) / 2 # + (loss_rvmin1 + loss_rvmin2) / 2
     loss = loss_cls + loss_er + loss_ecr
 
     return loss
@@ -361,7 +390,7 @@ def main():
                         help='fusion module embedding dimensions')
     parser.add_argument('--resume', default='', type=str, metavar='PATH',
                         help='path to latest checkpoint (default: none)')
-    parser.add_argument('--pretrain', default='/shared/CenterCam/saved_models/Center_cam_aff_checkpoint.pth.tar', type=str, metavar='PATH',# bert_unc_model.pth.tar,/shared/ReferCam/saved_models/ReferCam_model_best.pth.tar
+    parser.add_argument('--pretrain', default='/shared/CenterCam/saved_models/Center_cam_split_checkpoint.pth.tar', type=str, metavar='PATH',# bert_unc_model.pth.tar,/shared/ReferCam/saved_models/ReferCam_model_best.pth.tar
                         help='pretrain support load state_dict that are not identical, while have no loss saved as resume')
     parser.add_argument('--optimizer', default='RMSprop', help='optimizer: sgd, adam, RMSprop')
     parser.add_argument('--print_freq', '-p', default=100, type=int,
@@ -434,7 +463,7 @@ def main():
                          split_root=args.split_root,
                          dataset=args.dataset,
                          testmode=True,
-                         split='testA',
+                         split='testB',
                          imsize = args.size,
                          transform=input_transform,
                          max_query_len=args.time,
@@ -523,7 +552,7 @@ def main():
 
     ## training and testing
     best_accu = -float('Inf')
-    accu_new = validate_epoch(val_loader, model, args.size_average)
+    # accu_new = validate_epoch(val_loader, model, args.size_average)
     if args.test:
         _ = test_epoch(test_loader, model, args.size_average)
         exit(0)
@@ -573,7 +602,7 @@ def train_epoch(train_loader, model, optimizer, epoch, size_average):
         bbox = torch.clamp(bbox,min=0,max=args.size-1)
 
         ## Note LSTM does not use word_mask
-        pred_anchor,intmd_fea, flang = model(image, word_id, word_mask)
+        pred_anchor,intmd_fea, flang, cam, cam_rv = model(image, word_id, word_mask)
 
         ## convert gt box to center+offset format
         gt_param, gi, gj = build_target(bbox, pred_anchor)
@@ -608,9 +637,11 @@ def train_epoch(train_loader, model, optimizer, epoch, size_average):
         # pred_coord = xywh2xyxy(pred_coord)
 
         ## loss
-        ref_loss=0.
-        if args.seg:
-            ref_loss = (seam_loss(cam[0],cam_rv[0],cam[1],cam_rv[1],gt_score[0])+seam_loss(cam[1],cam_rv[1],cam[2],cam_rv[2],gt_score[1])+seam_loss(cam[2],cam_rv[2],cam[0],cam_rv[0],gt_score[2]))/3
+        # ref_loss=0.
+        # if args.seg:
+        ref_loss = (seam_loss(cam[0],cam_rv[0],cam[1],cam_rv[1],torch.stack([torch.stack(gi[0]),torch.stack(gj[0])]).transpose(0,1),torch.stack([torch.stack(gi[1]),torch.stack(gj[1])]).transpose(0,1))+
+                    seam_loss(cam[1],cam_rv[1],cam[2],cam_rv[2],torch.stack([torch.stack(gi[1]),torch.stack(gj[1])]).transpose(0,1),torch.stack([torch.stack(gi[2]),torch.stack(gj[2])]).transpose(0,1))
+                    +seam_loss(cam[2],cam_rv[2],cam[0],cam_rv[0],torch.stack([torch.stack(gi[2]),torch.stack(gj[2])]).transpose(0,1),torch.stack([torch.stack(gi[0]),torch.stack(gj[0])]).transpose(0,1)))/3
             # ref_loss=refine_loss(bi_score, gt_score)
         loss = yolo_loss(pred_anchor, gt_param, gi, gj) + ref_loss
         optimizer.zero_grad()
@@ -701,7 +732,7 @@ def validate_epoch(val_loader, model, size_average, mode='val'):
 
         with torch.no_grad():
             ## Note LSTM does not use word_mask
-            pred_anchor,intmd_fea,flang = model(image, word_id, word_mask)
+            pred_anchor,intmd_fea,flang, cam_out,cam_rv = model(image, word_id, word_mask)
         # for ii in range(len(pred_anchor)):
         #     pred_anchor[ii] = pred_anchor[ii].view(   \
         #             pred_anchor[ii].size(0),3,pred_anchor[ii].size(2),pred_anchor[ii].size(3))
@@ -767,9 +798,9 @@ def validate_epoch(val_loader, model, size_average, mode='val'):
         ## metrics
         iou = 0 #bbox_iou(pred_bbox, target_bbox.data.cpu(), x1y1x2y2=True)
 
-        accu_center = compute_point_box(np.array(pred_bbox),bbox_gt.data.cpu().numpy())#compute_dists(np.array(pred_bbox),bbox.data.cpu().numpy(),5)/args.batch_size#np.sum(np.array((np.array(target_best_gi) == np.array(pred_gi)) * (np.array(target_best_gj) == np.array(pred_gj)), dtype=float))/args.batch_size
+        # accu_center = compute_point_box(np.array(pred_bbox),bbox_gt.data.cpu().numpy())#compute_dists(np.array(pred_bbox),bbox.data.cpu().numpy(),5)/args.batch_size#np.sum(np.array((np.array(target_best_gi) == np.array(pred_gi)) * (np.array(target_best_gj) == np.array(pred_gj)), dtype=float))/args.batch_size
 
-        # accu_center = np.sum(np.array((np.array(target_best_gi) == np.array(pred_gi)) * (np.array(target_best_gj) == np.array(pred_gj)), dtype=float))/args.batch_size
+        accu_center = np.sum(np.array((np.array(target_best_gi) == np.array(pred_gi)) * (np.array(target_best_gj) == np.array(pred_gj)), dtype=float))/args.batch_size
         accu = 0#np.sum(np.array((iou.data.cpu().numpy()>0.5),dtype=float))/args.batch_size
         # gt_onehot=np.array((iou.data.cpu().numpy()>0.5),dtype=float)
 
@@ -806,6 +837,38 @@ def validate_epoch(val_loader, model, size_average, mode='val'):
 
     return acc_center.avg
 
+def visualize_cam(mask, img, alpha=1.0):
+    """Make heatmap from mask and synthesize GradCAM result image using heatmap and img.
+    Args:
+        mask (torch.tensor): mask shape of (1, 1, H, W) and each element has value in range [0, 1]
+        img (torch.tensor): img shape of (1, 3, H, W) and each pixel value is in range [0, 1]
+
+    Return:
+        heatmap (torch.tensor): heatmap img shape of (3, H, W)
+        result (torch.tensor): synthesized GradCAM result of same shape with heatmap.
+    """
+
+    heatmap = (255 * mask.squeeze()).type(torch.uint8).cpu().numpy()
+    heatmap = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)
+    heatmap = torch.from_numpy(heatmap).permute(2, 0, 1).float().div(255)
+    b, g, r = heatmap.split(1)
+    heatmap = torch.cat([r, g, b]) * alpha
+
+    result = heatmap+img.cpu()
+    result = result.div(result.max()).squeeze()
+
+    return heatmap, result
+
+def save_img_padding(img_np, pad_height=30):
+    pad = np.ones((pad_height,img_np.shape[1],3), dtype=np.float32) * 122
+    img_np = cv2.vconcat([pad, img_np, pad])
+    return img_np
+
+def concat_np_imgs(img_np_1, img_np_2):
+    vertical_wall = np.concatenate((np.zeros((img_np_1.shape[0], 3, 2)),np.ones((img_np_1.shape[0], 3, 1))),axis=2).astype(np.float32) * 255.
+    img_np_1 = cv2.hconcat([vertical_wall, img_np_1, vertical_wall, img_np_2])
+    return img_np_1
+
 def test_epoch(val_loader, model, size_average, mode='test'):
     batch_time = AverageMeter()
     data_time = AverageMeter()
@@ -818,6 +881,11 @@ def test_epoch(val_loader, model, size_average, mode='test'):
     model.eval()
     end = time.time()
 
+    inv_normalize = transforms.Normalize(
+        mean=[-0.485 / 0.229, -0.456 / 0.224, -0.406 / 0.225],
+        std=[1 / 0.229, 1 / 0.224, 1 / 0.225]
+    )
+
     IU_result = list()
     score_thresh = 1e-9
     eval_seg_iou_list = [.5, .6, .7, .8, .9]
@@ -826,11 +894,19 @@ def test_epoch(val_loader, model, size_average, mode='test'):
     seg_correct = np.zeros(len(eval_seg_iou_list), dtype=np.int32)
     seg_total = 0.
 
+    # print(model)
+
+    # for name, param in model.named_parameters():
+    #     if param.requires_grad:
+    #         print(name)
+
+    # model=GradCAM()
+
     tbar = tqdm(val_loader)
 
     # for batch_idx, (imgs, word_id, word_mask, bbox, mask) in enumerate(tbar):
 
-    for batch_idx, (imgs, word_id, word_mask, bbox_gt, ratio, dw, dh, im_id, mask, center) in enumerate(tbar):
+    for batch_idx, (imgs, word_id, word_mask, bbox_gt, ratio, dw, dh, im_id, mask, center, phrase) in enumerate(tbar):
         imgs = imgs.cuda()
         word_id = word_id.cuda()
         word_mask = word_mask.cuda()
@@ -843,7 +919,7 @@ def test_epoch(val_loader, model, size_average, mode='test'):
 
         with torch.no_grad():
             ## Note LSTM does not use word_mask
-            pred_anchor,intmd_fea,flang = model(image, word_id, word_mask)
+            pred_anchor,intmd_fea,flang, cam_out, cam_rv = model(image, word_id, word_mask)
         # for ii in range(len(pred_anchor)):
         #     pred_anchor[ii] = pred_anchor[ii].view(   \
         #             pred_anchor[ii].size(0),3,5,pred_anchor[ii].size(2),pred_anchor[ii].size(3))
@@ -898,6 +974,11 @@ def test_epoch(val_loader, model, size_average, mode='test'):
         # pred_bbox = xywh2xyxy(pred_bbox)
         target_bbox = center
 
+        cam_ext=cam_out[best_scale][:,gj*8+gi].cpu().numpy()
+        cam_ext = cam_ext - np.min(cam_ext)
+        cam_img = cam_ext / np.max(cam_ext)
+
+
         point_vis=True
 
         if point_vis:
@@ -918,6 +999,18 @@ def test_epoch(val_loader, model, size_average, mode='test'):
             dst = vis_detections(dst, "GT", gt_box, (204, 0, 0))
             cv2.circle(dst, (center_gt[0], center_gt[1]), 5, (0, 0, 204), -1)
             cv2.circle(dst,(point[0],point[1]),3,(0, 204, 0),-1)
+
+            torch_img = inv_normalize(imgs.squeeze(0))
+            mask_cam=torch.from_numpy(cam_img).unsqueeze(0)
+            mask_cam=F.interpolate(mask_cam, [256,256], mode='bilinear', align_corners=True)
+            heatmap, result = visualize_cam(mask_cam, torch_img)
+
+            heatmap = save_img_padding(heatmap.permute(1,2,0).cpu().numpy())
+            result = save_img_padding(result.permute(1,2,0).cpu().numpy())
+            dst = concat_np_imgs(dst, heatmap[:, :, ::-1].copy() *255.0)
+            dst = concat_np_imgs(dst, result[:, :, ::-1].copy() *255.0)
+
+            dst=concat_np_imgs(heatmap[:, :, ::-1].copy() *255.0, result[:, :, ::-1].copy() *255.0)
 
             # dst = cv2.cvtColor(dst, cv2.COLOR_BGR2RGB)
             cv2.imwrite('/shared/CenterCam/cam_out/' + str(im_id[0].split(".")[0]) + ".jpg", dst)
