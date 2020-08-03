@@ -390,7 +390,7 @@ def main():
                         help='fusion module embedding dimensions')
     parser.add_argument('--resume', default='', type=str, metavar='PATH',
                         help='path to latest checkpoint (default: none)')
-    parser.add_argument('--pretrain', default='/shared/CenterCam/saved_models/Center_cam_split_checkpoint.pth.tar', type=str, metavar='PATH',# bert_unc_model.pth.tar,/shared/ReferCam/saved_models/ReferCam_model_best.pth.tar
+    parser.add_argument('--pretrain', default='/shared/CenterCam/saved_models/Center_cam_default_checkpoint.pth.tar', type=str, metavar='PATH',# bert_unc_model.pth.tar,/shared/ReferCam/saved_models/ReferCam_model_best.pth.tar
                         help='pretrain support load state_dict that are not identical, while have no loss saved as resume')
     parser.add_argument('--optimizer', default='RMSprop', help='optimizer: sgd, adam, RMSprop')
     parser.add_argument('--print_freq', '-p', default=100, type=int,
@@ -637,11 +637,11 @@ def train_epoch(train_loader, model, optimizer, epoch, size_average):
         # pred_coord = xywh2xyxy(pred_coord)
 
         ## loss
-        # ref_loss=0.
+        ref_loss=0.
         # if args.seg:
-        ref_loss = (seam_loss(cam[0],cam_rv[0],cam[1],cam_rv[1],torch.stack([torch.stack(gi[0]),torch.stack(gj[0])]).transpose(0,1),torch.stack([torch.stack(gi[1]),torch.stack(gj[1])]).transpose(0,1))+
-                    seam_loss(cam[1],cam_rv[1],cam[2],cam_rv[2],torch.stack([torch.stack(gi[1]),torch.stack(gj[1])]).transpose(0,1),torch.stack([torch.stack(gi[2]),torch.stack(gj[2])]).transpose(0,1))
-                    +seam_loss(cam[2],cam_rv[2],cam[0],cam_rv[0],torch.stack([torch.stack(gi[2]),torch.stack(gj[2])]).transpose(0,1),torch.stack([torch.stack(gi[0]),torch.stack(gj[0])]).transpose(0,1)))/3
+        # ref_loss = (seam_loss(cam[0],cam_rv[0],cam[1],cam_rv[1],torch.stack([torch.stack(gi[0]),torch.stack(gj[0])]).transpose(0,1),torch.stack([torch.stack(gi[1]),torch.stack(gj[1])]).transpose(0,1))+
+        #             seam_loss(cam[1],cam_rv[1],cam[2],cam_rv[2],torch.stack([torch.stack(gi[1]),torch.stack(gj[1])]).transpose(0,1),torch.stack([torch.stack(gi[2]),torch.stack(gj[2])]).transpose(0,1))
+        #             +seam_loss(cam[2],cam_rv[2],cam[0],cam_rv[0],torch.stack([torch.stack(gi[2]),torch.stack(gj[2])]).transpose(0,1),torch.stack([torch.stack(gi[0]),torch.stack(gj[0])]).transpose(0,1)))/3
             # ref_loss=refine_loss(bi_score, gt_score)
         loss = yolo_loss(pred_anchor, gt_param, gi, gj) + ref_loss
         optimizer.zero_grad()
@@ -941,55 +941,64 @@ def test_epoch(val_loader, model, size_average, mode='test'):
         target_best_gi,target_best_gj=[],[]
         pred_gi, pred_gj, pred_best_n = [],[],[]
         for ii in range(1):
-            if max_loc[ii] < 1*(args.size//32)**2:
-                best_scale = 0
-            elif max_loc[ii] < 1*(args.size//32)**2 + 1*(args.size//16)**2:
-                best_scale = 1
-            else:
-                best_scale = 2
+            for best_scale in range(len(pred_conf_list)):
+            # if max_loc[ii] < 1*(args.size//32)**2:
+            #     best_scale = 0
+            # elif max_loc[ii] < 1*(args.size//32)**2 + 1*(args.size//16)**2:
+            #     best_scale = 1
+            # else:
+            #     best_scale = 2
 
-            grid, grid_size = args.size//(32//(2**best_scale)), 32//(2**best_scale)
-            anchor_idxs = [x + 3*best_scale for x in [0,1,2]]
-            anchors = [anchors_full[i] for i in anchor_idxs]
-            scaled_anchors = [ (x[0] / (args.anchor_imsize/grid), \
-                x[1] / (args.anchor_imsize/grid)) for x in anchors]
+                grid, grid_size = args.size//(32//(2**best_scale)), 32//(2**best_scale)
+                anchor_idxs = [x + 3*best_scale for x in [0,1,2]]
+                anchors = [anchors_full[i] for i in anchor_idxs]
+                scaled_anchors = [ (x[0] / (args.anchor_imsize/grid), \
+                    x[1] / (args.anchor_imsize/grid)) for x in anchors]
 
-            pred_conf = pred_conf_list[best_scale].view(args.batch_size,1,grid,grid).data.cpu().numpy()
-            max_conf_ii = max_conf.data.cpu().numpy()
+                pred_conf = pred_conf_list[best_scale].view(args.batch_size,1,grid,grid).data.cpu().numpy()
+                max_conf, max_loc=torch.max(pred_conf_list[best_scale], dim=1)
+                max_conf_ii = max_conf.data.cpu().numpy()
 
-            # print(max_conf[ii],max_loc[ii],pred_conf_list[best_scale][ii,max_loc[ii]-64])
-            (best_n, gj, gi) = np.where(pred_conf[ii,:,:,:] == max_conf_ii[ii])
-            best_n, gi, gj = int(best_n[0]), int(gi[0]), int(gj[0])
-            pred_gi.append(gi)
-            pred_gj.append(gj)
-            target_best_gi.append(target_gi[best_scale][ii])
-            target_best_gj.append(target_gj[best_scale][ii])
-            pred_best_n.append(best_n+best_scale*3)
+                # print(max_conf[ii],max_loc[ii],pred_conf_list[best_scale][ii,max_loc[ii]-64])
+                (best_n, gj, gi) = np.where(pred_conf[ii,:,:,:] == max_conf_ii[ii])
+                best_n, gi, gj = int(best_n[0]), int(gi[0]), int(gj[0])
+                pred_gi.append(gi)
+                pred_gj.append(gj)
+                target_best_gi.append(target_gi[best_scale][ii])
+                target_best_gj.append(target_gj[best_scale][ii])
+                pred_best_n.append(best_n+best_scale*3)
 
-            pred_bbox[ii,0] = F.sigmoid(pred_anchor[best_scale][ii, 0, gj, gi]) + gi
-            pred_bbox[ii,1] = F.sigmoid(pred_anchor[best_scale][ii, 1, gj, gi]) + gj
-            # pred_bbox[ii,2] = torch.exp(pred_anchor[best_scale][ii, best_n, 2, gj, gi]) * scaled_anchors[best_n][0]
-            # pred_bbox[ii,3] = torch.exp(pred_anchor[best_scale][ii, best_n, 3, gj, gi]) * scaled_anchors[best_n][1]
-            pred_bbox[ii,:] = pred_bbox[ii,:] * grid_size
+                pred_bbox[ii,0] = F.sigmoid(pred_anchor[best_scale][ii, 0, gj, gi]) + gi
+                pred_bbox[ii,1] = F.sigmoid(pred_anchor[best_scale][ii, 1, gj, gi]) + gj
+                # pred_bbox[ii,2] = torch.exp(pred_anchor[best_scale][ii, best_n, 2, gj, gi]) * scaled_anchors[best_n][0]
+                # pred_bbox[ii,3] = torch.exp(pred_anchor[best_scale][ii, best_n, 3, gj, gi]) * scaled_anchors[best_n][1]
+                pred_bbox[ii,:] = pred_bbox[ii,:] * grid_size
         # pred_bbox = xywh2xyxy(pred_bbox)
         target_bbox = center
-
-        cam_ext=cam_out[best_scale][:,gj*8+gi].cpu().numpy()
-        cam_ext = cam_ext - np.min(cam_ext)
-        cam_img = cam_ext / np.max(cam_ext)
+        cam=cam_out
+        pred_ch=gj*8+gi
+        # cam_out_rv=cam_rv[best_scale][:,gj*8+gi]
+        # cam_out_rv=F.interpolate(cam_out_rv.unsqueeze(1), (256, 256), mode='bilinear', align_corners=True)
+        # sum_cam=cam_out_rv.cpu().numpy()
+        # # sum_cam = np.sum(cam_list, axis=0)
+        # sum_cam[sum_cam < 0] = 0
+        # cam_max = np.max(sum_cam, (2, 3), keepdims=True)
+        # cam_min = np.min(sum_cam, (2, 3), keepdims=True)
+        # sum_cam[sum_cam < cam_min + 1e-5] = 0
+        # norm_cam = (sum_cam - cam_min - 1e-5) / (cam_max - cam_min + 1e-5)
 
 
         point_vis=True
 
         if point_vis:
-            dst = imgs.data.cpu().numpy().transpose(0,2,3,1)[0]
+            dst = imgs.squeeze().data.cpu().numpy().transpose(1, 2, 0)
             mst = mask.squeeze().data.cpu().numpy()
-            center_gt=center.squeeze().data.cpu().numpy()
+            center_gt = center.squeeze().data.cpu().numpy()
             gt_box = bbox_gt.squeeze().data.cpu().numpy()
-            dst = dst.copy()
 
+            # imgs = input[ii, :, :, :].copy()
             dst = (dst * np.array([0.299, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])) * 255.
-            # dst = dst.transpose(2,0,1)
+            # imgs = imgs.squeeze().transpose(2,0,1)
             dst = np.array(dst, dtype=np.float32)
             dst = cv2.cvtColor(dst, cv2.COLOR_RGB2BGR)
             mst = np.stack([mst * 255] * 3).transpose(1, 2, 0)
@@ -1000,22 +1009,83 @@ def test_epoch(val_loader, model, size_average, mode='test'):
             cv2.circle(dst, (center_gt[0], center_gt[1]), 5, (0, 0, 204), -1)
             cv2.circle(dst,(point[0],point[1]),3,(0, 204, 0),-1)
 
-            torch_img = inv_normalize(imgs.squeeze(0))
-            mask_cam=torch.from_numpy(cam_img).unsqueeze(0)
-            mask_cam=F.interpolate(mask_cam, [256,256], mode='bilinear', align_corners=True)
-            heatmap, result = visualize_cam(mask_cam, torch_img)
+            def vis_cam(cams, n, h, w, color,k,gj,gi,img):
+                height = 256
+                pred_ch = gj * k + gi
+                # color = (123.7, 116.3, 103.5)
+                ratio = float(height) / max([h, w])
+                new_shape = (round(w * ratio), round(h * ratio))
 
-            heatmap = save_img_padding(heatmap.permute(1,2,0).cpu().numpy())
-            result = save_img_padding(result.permute(1,2,0).cpu().numpy())
-            dst = concat_np_imgs(dst, heatmap[:, :, ::-1].copy() *255.0)
-            dst = concat_np_imgs(dst, result[:, :, ::-1].copy() *255.0)
+                # h,w =256 ,256
+                cam=cams[n][:, pred_ch]
+                cam=F.interpolate(cam.unsqueeze(1), (256, 256), mode='bilinear', align_corners=True)
+                cam = np.stack([cam.squeeze().data.cpu().numpy()] * 3).transpose(1, 2, 0)
+                cam = cam - np.min(cam)
+                cam = cam / np.max(cam)
+                cam[cam<0.5]=0
+                cam_img = np.uint8(255 * cam)
 
-            dst=concat_np_imgs(heatmap[:, :, ::-1].copy() *255.0, result[:, :, ::-1].copy() *255.0)
+                return cam_img + img, cam
 
-            # dst = cv2.cvtColor(dst, cv2.COLOR_BGR2RGB)
-            cv2.imwrite('/shared/CenterCam/cam_out/' + str(im_id[0].split(".")[0]) + ".jpg", dst)
-            # Image.fromarray(dst.astype(np.uint8)).save(
-            #     '/shared/CenterCam/cam_out/' + str(im_id[0].split(".")[0]) + ".jpg")
+
+            w = int(gt_box[2] - gt_box[0])
+            h = int(gt_box[3] - gt_box[1])
+            cam1, c1 = vis_cam(cam, 0, h, w, (123.7, 116.3, 103.5),8,pred_gj[0],pred_gi[0],dst)
+            cam2, c2 = vis_cam(cam, 1, h, w, (123.7, 116.3, 140.5),16,pred_gj[1],pred_gi[1],dst)
+            cam3, c3 = vis_cam(cam, 2, h, w, (123.7, 116.3, 103.5),32,pred_gj[2],pred_gi[2],dst)
+
+            cam4=(c1+c2+c3)/3
+            cam4 = cam4 - np.min(cam4)
+            cam4 = cam4 / np.max(cam4)
+            cam4[cam4 < 0.5] = 0
+
+            cam4 = np.uint8(255 * cam4) + dst
+            # mst = np.stack([mst * 255] * 3).transpose(1, 2, 0)
+            # cam1= visual_cam(cam,imgs,0,8,gj,gi)
+            # cam2 = visual_cam(cam, imgs, 1, 16, gj, gi)
+            # cam3 = visual_cam(cam, imgs, 2, 32, gj, gi)
+
+
+            dst_show = np.concatenate((dst, mst, cam1, cam2, cam3, cam4), axis=1)
+
+            cv2.imwrite('/shared/CenterCam/cam_out/' + str(im_id[0].split(".")[0]) +str(batch_idx)+ ".jpg", dst_show)
+
+            # dst_img = imgs.data.cpu().numpy().transpose(0,2,3,1)[0]
+            # mst = mask.squeeze().data.cpu().numpy()
+            # center_gt=center.squeeze().data.cpu().numpy()
+            # gt_box = bbox_gt.squeeze().data.cpu().numpy()
+            # dst = dst_img.copy()
+            #
+            # dst = (dst * np.array([0.299, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])) * 255.
+            # # dst = dst.transpose(2,0,1)
+            # dst = np.array(dst, dtype=np.float32)
+            # dst = cv2.cvtColor(dst, cv2.COLOR_RGB2BGR)
+            # mst = np.stack([mst * 255] * 3).transpose(1, 2, 0)
+            # point=pred_bbox[0,:2].long().data.cpu().numpy().tolist()
+            # dst= cv2.addWeighted(dst, 0.7, mst, 0.3,0)
+            #
+            # dst = vis_detections(dst, "GT", gt_box, (204, 0, 0))
+            # cv2.circle(dst, (center_gt[0], center_gt[1]), 5, (0, 0, 204), -1)
+            # cv2.circle(dst,(point[0],point[1]),3,(0, 204, 0),-1)
+            #
+            # # torch_img = inv_normalize(imgs.squeeze(0))
+            # # mask_cam=torch.from_numpy(cam_img).unsqueeze(0)
+            # # mask_cam=F.interpolate(mask_cam, [256,256], mode='bilinear', align_corners=True)
+            # # heatmap, result = visualize_cam(mask_cam, torch_img)
+            # #
+            # # heatmap = save_img_padding(heatmap.permute(1,2,0).cpu().numpy())
+            # # result = save_img_padding(result.permute(1,2,0).cpu().numpy())
+            # # dst = concat_np_imgs(dst, heatmap[:, :, ::-1].copy() *255.0)
+            # # dst = concat_np_imgs(dst, result[:, :, ::-1].copy() *255.0).squeeze()
+            # cam_dist=0.5* imgs.data.cpu().numpy()+0.5* np.stack([norm_cam.squeeze() * 255] * 3)
+            # dst = np.concatenate((dst, mst, cam_dist.squeeze().transpose(1,2,0)), axis=1)
+            # # dst = concat_np_imgs(dst, cam_dist)
+            # # dst=concat_np_imgs(heatmap[:, :, ::-1].copy() *255.0, result[:, :, ::-1].copy() *255.0)
+            #
+            # # dst = cv2.cvtColor(dst, cv2.COLOR_BGR2RGB)
+            # cv2.imwrite('/shared/CenterCam/cam_out/' + str(im_id[0].split(".")[0]) + ".jpg", dst)
+            # # Image.fromarray(dst.astype(np.uint8)).save(
+            # #     '/shared/CenterCam/cam_out/' + str(im_id[0].split(".")[0]) + ".jpg")
 
         if args.seg:
             cam,_, bi_score = model.module.segmentation((intmd_fea,image, flang, pred_bbox.cuda(), args))
