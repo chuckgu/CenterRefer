@@ -9,7 +9,8 @@ from torch.utils.data.distributed import DistributedSampler
 
 from .darknet import *
 from model.ReferCam import *
-
+from pydensecrf import densecrf
+from model.pamr import PAMR
 import argparse
 import collections
 import logging
@@ -20,23 +21,43 @@ import time
 from pytorch_pretrained_bert.tokenization import BertTokenizer
 from pytorch_pretrained_bert.modeling import BertModel
 
-def self_attention(feat):
-    n,c,h,w = feat.size()
-    feat = feat.view(n,-1,h*w)
-    f = feat/(torch.norm(feat,dim=1,keepdim=True)+1e-5)
+def max_norm(p, version='torch', e=1e-5):
+	if version is 'torch':
+		if p.dim() == 3:
+			C, H, W = p.size()
+			p = F.relu(p)
+			max_v = torch.max(p.view(C,-1),dim=-1)[0].view(C,1,1)
+			min_v = torch.min(p.view(C,-1),dim=-1)[0].view(C,1,1)
+			p = F.relu(p-min_v-e)/(max_v-min_v+e)
+		elif p.dim() == 4:
+			N, C, H, W = p.size()
+			p = F.relu(p)
+			max_v = torch.max(p.view(N,C,-1),dim=-1)[0].view(N,C,1,1)
+			min_v = torch.min(p.view(N,C,-1),dim=-1)[0].view(N,C,1,1)
+			p = F.relu(p-min_v-e)/(max_v-min_v+e)
+	elif version is 'numpy' or version is 'np':
+		if p.ndim == 3:
+			C, H, W = p.shape
+			p[p<0] = 0
+			max_v = np.max(p,(1,2),keepdims=True)
+			min_v = np.min(p,(1,2),keepdims=True)
+			p[p<min_v+e] = 0
+			p = (p-min_v-e)/(max_v+e)
+		elif p.ndim == 4:
+			N, C, H, W = p.shape
+			p[p<0] = 0
+			max_v = np.max(p,(2,3),keepdims=True)
+			min_v = np.min(p,(2,3),keepdims=True)
+			p[p<min_v+e] = 0
+			p = (p-min_v-e)/(max_v+e)
+	return p
 
-    aff = F.relu(torch.matmul(f.transpose(1,2), f),inplace=True)
-    aff = aff/(torch.sum(aff,dim=1,keepdim=True)+1e-5)
-    feat = torch.matmul(f, aff)+feat
 
-    return feat.view(n,-1,h,w)
-
-
-class Self_Attn(nn.Module):
+class Self_Attn_Layer(nn.Module):
     """ Self attention Layer"""
 
     def __init__(self, in_dim, activation):
-        super(Self_Attn, self).__init__()
+        super(Self_Attn_Layer, self).__init__()
         self.chanel_in = in_dim
         self.activation = activation
 
@@ -55,6 +76,8 @@ class Self_Attn(nn.Module):
                 out : self attention value + input feature
                 attention: B X N X N (N is Width*Height)
         """
+        if type(x) is list or type(x) is tuple:
+            x=x[0]
         m_batchsize, C, width, height = x.size()
         proj_query = self.query_conv(x).view(m_batchsize, -1, width * height).permute(0, 2, 1)  # B X CX(N)
         proj_key = self.key_conv(x).view(m_batchsize, -1, width * height)  # B X C x (*W*H)
@@ -67,6 +90,28 @@ class Self_Attn(nn.Module):
 
         out = self.gamma * out + x
         return out,attention
+
+class Self_Attn(nn.Module):
+    """ Self attention Layer"""
+
+    def __init__(self, num_layer, in_dim, activation):
+        super(Self_Attn, self).__init__()
+        self.chanel_in = in_dim
+        self.activation = activation
+        self.num_layer = num_layer
+
+        self.layers=nn.Sequential()
+
+        for i in range(num_layer):
+            self.layers.add_module(
+                "attn_%d" % i,
+                Self_Attn_Layer(self.chanel_in, 'relu')
+            )
+
+    def forward(self, x):
+        return self.layers(x)
+
+
 
 def generate_coord(batch, height, width):
     # coord = Variable(torch.zeros(batch,8,height,width).cuda())
@@ -149,11 +194,12 @@ class RNNEncoder(nn.Module):
 
 class grounding_model(nn.Module):
     def __init__(self, corpus=None, emb_size=256, jemb_drop_out=0.1, bert_model='bert-base-uncased', \
-     coordmap=True, leaky=False, dataset=None, light=False,seg=False):
+     coordmap=True, leaky=False, dataset=None, light=False,seg=False,att=False):
         super(grounding_model, self).__init__()
         self.coordmap = coordmap
         self.light = light
         self.seg=seg
+        self.att=att
         self.lstm = (corpus is not None)
         self.emb_size = emb_size
         if bert_model=='bert-base-uncased':
@@ -233,24 +279,26 @@ class grounding_model(nn.Module):
                     # Self_Attn(emb_size, 'relu'),
                     ConvBatchNormReLU(emb_size, emb_size, 1, 1, 0, 1, leaky=leaky),)),
             ]))
-            # self.fcn_out = nn.Sequential(OrderedDict([
-            #     ('0', torch.nn.Sequential(
-            #         ConvBatchNormReLU(emb_size, emb_size//2, 1, 1, 0, 1, leaky=leaky),
-            #         nn.Conv2d(emb_size//2, 3, kernel_size=1),)),
-            #     ('1', torch.nn.Sequential(
-            #         ConvBatchNormReLU(emb_size, emb_size//2, 1, 1, 0, 1, leaky=leaky),
-            #         nn.Conv2d(emb_size//2, 3, kernel_size=1),)),
-            #     ('2', torch.nn.Sequential(
-            #         ConvBatchNormReLU(emb_size, emb_size//2, 1, 1, 0, 1, leaky=leaky),
-            #         nn.Conv2d(emb_size//2, 3, kernel_size=1),)),
-            # ]))
-            # self.attn_emb=Self_Attn(emb_size, 'relu')
+            self.fcn_out = nn.Sequential(OrderedDict([
+                ('0', torch.nn.Sequential(
+                    ConvBatchNormReLU(emb_size, emb_size//2, 1, 1, 0, 1, leaky=leaky),
+                    nn.Conv2d(emb_size//2, 3, kernel_size=1),)),
+                ('1', torch.nn.Sequential(
+                    ConvBatchNormReLU(emb_size, emb_size//2, 1, 1, 0, 1, leaky=leaky),
+                    nn.Conv2d(emb_size//2, 3, kernel_size=1),)),
+                ('2', torch.nn.Sequential(
+                    ConvBatchNormReLU(emb_size, emb_size//2, 1, 1, 0, 1, leaky=leaky),
+                    nn.Conv2d(emb_size//2, 3, kernel_size=1),)),
+            ]))
+            if self.att:
+                self.attn_emb=Self_Attn(4, emb_size, 'relu')
             # self.fcn_emb=torch.nn.Sequential(
             #         ConvBatchNormReLU(embin_size, emb_size, 1, 1, 0, 1, leaky=leaky),
             #         # Self_Attn(emb_size,'relu'),
             #         ConvBatchNormReLU(emb_size, emb_size, 3, 1, 1, 1, leaky=leaky),
             #         # Self_Attn(emb_size, 'relu'),
             #         ConvBatchNormReLU(emb_size, emb_size, 1, 1, 0, 1, leaky=leaky),)
+
             self.fcn_out_offset = nn.Sequential(OrderedDict([
                 ('0', torch.nn.Sequential(
                     ConvBatchNormReLU(emb_size, emb_size//2, 1, 1, 0, 1, leaky=leaky),
@@ -281,17 +329,36 @@ class grounding_model(nn.Module):
             ]))
 
         # if self.seg:
-        self.segmentation=ReferCam()
-        self.fit_f = nn.Conv2d(emb_size+3, emb_size, 1, bias=False)
+        # self.segmentation=ReferCam()
+        if self.seg:
+            seg_emb_size=embin_size+3 #embin_size+3 #emb_size+3
+            self.refine=nn.Sequential(OrderedDict([
+                ('0', torch.nn.Sequential(
+                    ConvBatchNormReLU(seg_emb_size, emb_size, 1, 1, 0, 1, leaky=leaky),
+                    nn.Conv2d(emb_size, emb_size, kernel_size=1),)),
+                ('1', torch.nn.Sequential(
+                    ConvBatchNormReLU(seg_emb_size, emb_size, 1, 1, 0, 1, leaky=leaky),
+                    nn.Conv2d(emb_size, emb_size, kernel_size=1),)),
+                ('2', torch.nn.Sequential(
+                    ConvBatchNormReLU(seg_emb_size, emb_size, 1, 1, 0, 1, leaky=leaky),
+                    nn.Conv2d(emb_size, emb_size, kernel_size=1),)),
+            ]))
+
+        # self.PAMR_KERNEL = [1, 2, 4, 8, 12, 24]
+        # self.PAMR_ITER = 10
+        #
+        # self._aff = PAMR(self.PAMR_ITER, self.PAMR_KERNEL)
 
     def forward(self, image, word_id, word_mask):
         ## Visual Module
         ## [1024, 13, 13], [512, 26, 26], [256, 52, 52]
         batch_size = image.size(0)
         raw_fvisu = self.visumodel(image)
+        # raw_fvisu = [raw_fvisu[-1]]
+        add_num=0
         fvisu = []
         for ii in range(len(raw_fvisu)):
-            fvisu.append(self.mapping_visu._modules[str(ii)](raw_fvisu[ii]))
+            fvisu.append(self.mapping_visu._modules[str(ii+add_num)](raw_fvisu[ii]))
             fvisu[ii] = F.normalize(fvisu[ii], p=2, dim=1)
 
         ## Language Module
@@ -321,37 +388,87 @@ class grounding_model(nn.Module):
             else:
                 flangvisu.append(torch.cat([fvisu[ii], flang_tile], dim=1))
         ## fcn
-        intmd_fea, outbox, cambox,cam_rv = [], [] , [], []
-        for ii in range(len(fvisu)):
-            intmd_fea.append(self.fcn_emb._modules[str(ii)](flangvisu[ii]))
-            cam=self.fcn_out_center._modules[str(ii)](intmd_fea[ii])
-            cambox.append(cam)
-            # cam_rv.append(self.PCM(cam, intmd_fea[ii], flang, image))
+        supervised=False
+        intmd_fea, outbox, cambox,cam_rv, attn_list = [], [] , [], [], []
+        if supervised:
+            for ii in range(len(fvisu)):
+                intmd_fea.append(self.fcn_emb._modules[str(ii)](flangvisu[ii]))
+                outbox.append(self.fcn_out._modules[str(ii)](intmd_fea[ii]))
+        else:
+            for ii in range(len(fvisu)):
+                # if self.att:
+                #     intmd, attn = self.attn_emb(self.fcn_emb._modules[str(ii+add_num)](flangvisu[ii]))
+                #     intmd_fea.append(intmd)
+                #     attn_list.append(attn)
+                # else:
+                intmd_fea.append(self.fcn_emb._modules[str(ii)](flangvisu[ii]))
 
-            out_center=F.adaptive_avg_pool2d(cam, (1, 1))
-            out_offset=self.fcn_out_offset._modules[str(ii)](intmd_fea[ii])
-            # outbox.append(out_offset)
-            outbox.append(torch.cat([out_offset,out_center.view(out_center.size(0),1,int(out_center.size(1)**(1/2)),int(out_center.size(1)**(1/2)))],dim=1))
-            # intmd,attn=self.attn_emb(self.fcn_emb(flangvisu[ii]))
+                cam=self.fcn_out_center._modules[str(ii+add_num)](intmd_fea[ii])
+                cambox.append(cam)
+                if self.seg:
+                    cam_rv.append(self.PCM(cam, flangvisu[ii],  image,ii+add_num))
+                    # cam_rv.append(self.run_pamr(image, cam))
 
-            # intmd_fea.append(intmd)
-            # attn_list.append(attn)
-            # outbox.append(self.fcn_out(intmd_fea[ii]))
+                out_center=F.adaptive_avg_pool2d(cam, (1, 1))
+                out_offset=self.fcn_out_offset._modules[str(ii)](intmd_fea[ii])
 
+                outbox.append(torch.cat([out_offset,out_center.view(out_center.size(0),1,int(out_center.size(1)**(1/2)),int(out_center.size(1)**(1/2)))],dim=1))
+
+
+
+
+        # if self.seg:
+        #     cam_rv=self.aggregation(cambox,flangvisu,image)
         # self.intmd_fea=intmd_fea
-        return outbox,fvisu,flang,cambox,cam_rv
+        return outbox,fvisu,flang,cambox,cam_rv,attn_list
 
-    def PCM(self, cam, f, lang, x):
+    def aggregation(self,cambox,flangvisu,image):
+        cam_inter=0.
+        for ii in range(len(cambox)):
+            cam=cambox[ii]
+            f=flangvisu[ii]
+            cam_rv=self.PCM(cam,f,image,ii)+cam_inter
+            if ii<2:
+                cam_inter=F.interpolate(cam_rv, (np.array(cam_rv.size()[-2:])*2).tolist(), mode="bilinear", align_corners=True)
+                cam_inter=torch.repeat_interleave(cam_inter,4,dim=1)
+        return cam_rv
+
+
+
+    def run_pamr(self, im, mask):
+        im = F.interpolate(im, mask.size()[-2:], mode="bilinear", align_corners=True)
+        masks_dec = self._aff(im, max_norm(mask))
+        return masks_dec
+
+    def crf_inference(sigm_val, H, W, proc_im):
+
+        sigm_val = np.squeeze(sigm_val)
+        d = densecrf.DenseCRF2D(W, H, 2)
+        U = np.expand_dims(-np.log(sigm_val + 1e-8), axis=0)
+        U_ = np.expand_dims(-np.log(1 - sigm_val + 1e-8), axis=0)
+        unary = np.concatenate((U_, U), axis=0)
+        unary = unary.reshape((2, -1))
+        d.setUnaryEnergy(unary)
+        d.addPairwiseGaussian(sxy=3, compat=3)
+        d.addPairwiseBilateral(sxy=20, srgb=3, rgbim=proc_im, compat=10)
+        Q = d.inference(5)
+        pred_raw_dcrf = np.argmax(Q, axis=0).reshape((H, W)).astype(np.float32)
+        # predicts_dcrf = im_processing.resize_and_crop(pred_raw_dcrf, mask.shape[0], mask.shape[1])
+
+        return pred_raw_dcrf
+
+    def PCM(self, cam, f, x, scale_ii):
 
         n, c, h, w = cam.size()
 
         with torch.no_grad():
             cam_d = F.relu(cam.detach())
             cam_d_max = torch.max(cam_d.view(n,c,-1), dim=-1)[0].view(n,c,1,1)+1e-5
-            cam_d_norm = F.relu(cam_d-1e-5)/cam_d_max
-            cam_d_norm[:,0,:,:] = 1-torch.max(cam_d_norm[:,1:,:,:], dim=1)[0]
-            cam_max = torch.max(cam_d_norm[:,1:,:,:], dim=1, keepdim=True)[0]
-            cam_d_norm[:,1:,:,:][cam_d_norm[:,1:,:,:] < cam_max] = 0
+            cam_d_min = torch.min(cam_d.view(n, c, -1), dim=-1)[0].view(n, c, 1, 1)
+            cam_d_norm = F.relu(cam_d-cam_d_min)/(cam_d_max-cam_d_min)
+            # cam_d_norm[:,0,:,:] = 1-torch.max(cam_d_norm[:,1:,:,:], dim=1)[0]
+            # cam_max = torch.max(cam_d_norm, dim=1, keepdim=True)[0]
+            # cam_d_norm[cam_d_norm < cam_max] = 0
 
 
         # n, c, h, w = f.size()
@@ -359,12 +476,20 @@ class grounding_model(nn.Module):
         # f = self.bilinear_att(f,lang)
         x_s = F.interpolate(x, (h, w), mode='bilinear', align_corners=True)
         f = torch.cat([x_s, f.detach()], dim=1)
-        f = self.fit_f(f)
+        f = self.refine._modules[str(scale_ii)](f)
         f = f.view(n, -1, h * w)
         f = f / (torch.norm(f, dim=1, keepdim=True) + 1e-5)
 
         aff = F.relu(torch.matmul(f.transpose(1, 2), f), inplace=True)
         aff = aff / (torch.sum(aff, dim=1, keepdim=True) + 1e-5)
+
+        # cam_d_norm = cam_d_norm.view(n,-1,h*w)
+        # cam_r = cam_d_norm.transpose(1,2)
+        # cam_r=torch.matmul(cam_r, aff)
+        # # cam_rv = cam_r.transpose(1, 2).view(n, -1, h, w)
+        #
+        # cam_rv = torch.matmul(cam_r.transpose(1,2), aff).view(n, -1, h, w)
+
         cam_rv = torch.matmul(cam_d_norm.view(n,-1,h*w), aff).view(n, -1, h, w)
 
         return cam_rv
