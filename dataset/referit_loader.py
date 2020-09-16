@@ -40,6 +40,7 @@ from pytorch_pretrained_bert.tokenization import BertTokenizer
 from pytorch_pretrained_bert.modeling import BertModel
 from utils.transforms import letterbox, random_affine
 
+
 sys.modules['utils'] = utils
 
 cv2.setNumThreads(0)
@@ -175,7 +176,7 @@ class ReferDataset(data.Dataset):
 
     def __init__(self, data_root, split_root='data', dataset='referit', imsize=256,
                  transform=None, augment=False, return_idx=False, testmode=False,
-                 split='train', max_query_len=128, lstm=False, bert_model='bert-base-uncased'):
+                 split='train', max_query_len=128, lstm=False, bert_model='bert-base-uncased', gaussian=None):
         self.images = []
         self.data_root = data_root
         self.split_root = split_root
@@ -190,6 +191,7 @@ class ReferDataset(data.Dataset):
         self.tokenizer = BertTokenizer.from_pretrained(bert_model, do_lower_case=True)
         self.augment=augment
         self.return_idx=return_idx
+        self.gaussian=gaussian
 
         if self.dataset == 'referit':
             self.dataset_root = osp.join(self.data_root, 'referit')
@@ -351,6 +353,7 @@ class ReferDataset(data.Dataset):
         img_path = osp.join(self.im_dir, img_file)
         img = cv2.imread(img_path)
 
+
         mask_path = osp.join(self.mask_dir, mask_file)
         # mask = sio.loadmat(mask_path)['segimg_t'] == 0
         # mask = mask.astype(np.float64)
@@ -361,7 +364,7 @@ class ReferDataset(data.Dataset):
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         else:
             img = np.stack([img] * 3)
-        return img, phrase, bbox, mask
+        return img, phrase, bbox, mask,img_path
 
     def tokenize_phrase(self, phrase):
         return self.corpus.tokenize(phrase, self.query_len)
@@ -373,10 +376,12 @@ class ReferDataset(data.Dataset):
         return len(self.images)
 
     def __getitem__(self, idx):
-        img, phrase, bbox, mask = self.pull_item(idx)
+        img, phrase, bbox, mask,img_path = self.pull_item(idx)
         # phrase = phrase.decode("utf-8").encode().lower()
         phrase = phrase.lower()
         center_gt = np.array(ndimage.measurements.center_of_mass(mask)[::-1], dtype=np.float32)
+        mask_origin=mask
+        image_origin=img
 
         if self.augment:
             augment_flip, augment_hsv, augment_affine = True,True,True
@@ -428,6 +433,11 @@ class ReferDataset(data.Dataset):
             center_gt[0], center_gt[1] = center_gt[0] * ratio + dw, center_gt[1] * ratio + dh
             center = center_gt
 
+        if self.gaussian is not None:
+            gap=np.random.normal(0, 1, 2)*self.gaussian
+            center=center+gap
+            center[0]=min(max(center[0],dw),self.imsize - dw)
+            center[1]=min(max(center[1],dh),self.imsize - dh)
         # center[0] = (bbox[0]+bbox[2])/2
         # center[1] = (bbox[1]+bbox[3])/2
 
@@ -456,7 +466,7 @@ class ReferDataset(data.Dataset):
         if self.testmode:
             return img, np.array(word_id, dtype=int), np.array(word_mask, dtype=int), \
                 np.array(bbox, dtype=np.float32), np.array(ratio, dtype=np.float32), \
-                np.array(dw, dtype=np.float32), np.array(dh, dtype=np.float32), self.images[idx][0], mask,np.array(center,dtype=np.float32),phrase
+                np.array(dw, dtype=np.float32), np.array(dh, dtype=np.float32), self.images[idx][0], mask,np.array(center,dtype=np.float32),phrase,mask_origin,image_origin
         else:
             return img, np.array(word_id, dtype=int), np.array(word_mask, dtype=int), \
             np.array(bbox, dtype=np.float32), mask, np.array(center,dtype=np.float32)
