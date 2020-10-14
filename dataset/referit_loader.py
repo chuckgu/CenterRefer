@@ -192,6 +192,7 @@ class ReferDataset(data.Dataset):
         self.augment=augment
         self.return_idx=return_idx
         self.gaussian=gaussian
+        self.cat_to_id={}
 
         if self.dataset == 'referit':
             self.dataset_root = osp.join(self.data_root, 'referit')
@@ -224,6 +225,8 @@ class ReferDataset(data.Dataset):
                 'Dataset {0} does not have split {1}'.format(
                     self.dataset, split))
         self.corpus = torch.load(corpus_path)
+        path = './dataset/unc_clust.pth'
+        # self.clust= torch.load(path)[0]
 
         splits = [split]
         if self.dataset != 'referit':
@@ -306,6 +309,9 @@ class ReferDataset(data.Dataset):
 
         refs = sorted(refs, key=lambda x: x['file_name'])
 
+        for i,k in enumerate(list(refer.Cats.keys())):
+            self.cat_to_id[k]=i
+
         if len(self.corpus) == 0:
             print('Saving dataset corpus dictionary...')
             corpus_file = osp.join(self.split_root, self.dataset, 'corpus.pth')
@@ -314,7 +320,7 @@ class ReferDataset(data.Dataset):
 
         if not osp.exists(self.mask_dir):
             os.makedirs(self.mask_dir)
-
+        cats=[]
         for ref in tqdm.tqdm(refs):
             img_filename = 'COCO_train2014_{0}.jpg'.format(
                 str(ref['image_id']).zfill(12))
@@ -323,6 +329,9 @@ class ReferDataset(data.Dataset):
                 seg = refer.anns[ref['ann_id']]['segmentation']
                 bbox=refer.anns[ref['ann_id']]['bbox']
                 area=refer.anns[ref['ann_id']]['area']
+                cat=ref['category_id']
+                cats.append(cat)
+                # print(refer.Cats[ref['category_id']])
                 rle = cocomask.frPyObjects(seg, h, w)
                 mask = np.max(cocomask.decode(rle), axis=2).astype(np.float32)
                 mask = torch.from_numpy(mask)
@@ -332,7 +341,7 @@ class ReferDataset(data.Dataset):
                     torch.save(mask, mask_filename)
                 for sentence in ref['sentences']:
                     split_dataset.append((
-                        img_filename, mask_file,bbox, sentence['sent'],area))
+                        img_filename, mask_file,bbox, sentence['sent'],area,self.cat_to_id[cat]))
 
         output_file = '{0}_{1}.pth'.format(self.dataset, setname)
         torch.save(split_dataset, osp.join(dataset_folder, output_file))
@@ -341,7 +350,8 @@ class ReferDataset(data.Dataset):
         if self.dataset == 'flickr':
             img_file, bbox, phrase = self.images[idx]
         else:
-            img_file, mask_file, bbox, phrase, attri = self.images[idx]
+            img_file, mask_file, bbox, phrase, attri, cat = self.images[idx]
+            mask_id=mask_file.split('.')[0]
             mask_file=mask_file.split('.')[0]+".pth"
         ## box format: to x1y1x2y2
         if not (self.dataset == 'referit' or self.dataset == 'flickr'):
@@ -352,6 +362,8 @@ class ReferDataset(data.Dataset):
 
         img_path = osp.join(self.im_dir, img_file)
         img = cv2.imread(img_path)
+
+        clust_label=cat
 
 
         mask_path = osp.join(self.mask_dir, mask_file)
@@ -364,7 +376,7 @@ class ReferDataset(data.Dataset):
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         else:
             img = np.stack([img] * 3)
-        return img, phrase, bbox, mask,img_path
+        return img, phrase, bbox, mask,img_path,clust_label
 
     def tokenize_phrase(self, phrase):
         return self.corpus.tokenize(phrase, self.query_len)
@@ -376,7 +388,7 @@ class ReferDataset(data.Dataset):
         return len(self.images)
 
     def __getitem__(self, idx):
-        img, phrase, bbox, mask,img_path = self.pull_item(idx)
+        img, phrase, bbox, mask,img_path, clust_label = self.pull_item(idx)
         # phrase = phrase.decode("utf-8").encode().lower()
         phrase = phrase.lower()
         center_gt = np.array(ndimage.measurements.center_of_mass(mask)[::-1], dtype=np.float32)
@@ -469,7 +481,7 @@ class ReferDataset(data.Dataset):
                 np.array(dw, dtype=np.float32), np.array(dh, dtype=np.float32), self.images[idx][0], mask,np.array(center,dtype=np.float32),phrase,mask_origin,image_origin
         else:
             return img, np.array(word_id, dtype=int), np.array(word_mask, dtype=int), \
-            np.array(bbox, dtype=np.float32), mask, np.array(center,dtype=np.float32)
+            np.array(bbox, dtype=np.float32), mask, np.array(center,dtype=np.float32), np.array(clust_label,dtype=np.float32)
 
 if __name__ == '__main__':
     # import nltk
@@ -509,15 +521,18 @@ if __name__ == '__main__':
                          imsize = args.size,
                          transform=input_transform,
                          max_query_len=args.time,
-                         testmode=True)
+                         testmode=False)
     val_loader = DataLoader(refer_val, batch_size=8, shuffle=False,
                               pin_memory=False, num_workers=0)
 
 
     bbox_list=[]
-    for batch_idx, (imgs, word_id, word_mask, bbox, masks) in enumerate(val_loader):
-        bboxes = (bbox[:,2:]-bbox[:,:2]).numpy().tolist()
-        for bbox in bboxes:
-            bbox_list.append(bbox)
-        if batch_idx%10000==0 and batch_idx!=0:
-            print(batch_idx)
+    for batch_idx, (imgs, word_id, word_mask, bbox, mask, center, gt_score) in enumerate(val_loader):
+        print(gt_score)
+        bbox_list.append(gt_score)
+        # bboxes = (bbox[:,2:]-bbox[:,:2]).numpy().tolist()
+        # for bbox in bboxes:
+        #     bbox_list.append(bbox)
+        # if batch_idx%10000==0 and batch_idx!=0:
+        #     print(batch_idx)
+    print(bbox_list)
